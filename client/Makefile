@@ -1,12 +1,5 @@
-PRODUCT = hello
-PLATFORMS += adam
-PLATFORMS += adam_cpm
+PRODUCT = fuji_blog
 PLATFORMS += apple2
-PLATFORMS += atari
-PLATFORMS += c64
-PLATFORMS += coco
-PLATFORMS += msdos
-PLATFORMS += msxrom
 
 # You can run 'make <platform>' to build for a specific platform,
 # or 'make <platform>/<target>' for a platform-specific target.
@@ -19,13 +12,13 @@ PLATFORMS += msxrom
 SRC_DIRS = src src/%PLATFORM%
 
 # FUJINET_LIB can be
-# - a version number such as 4.7.6
+# - a version number such as 4.10.0
 # - a directory which contains the libs for each platform
 # - a zip file with an archived fujinet-lib
 # - a URL to a git repo
 # - empty which will use whatever is the latest
 # - undefined, no fujinet-lib will be used
-FUJINET_LIB =
+FUJINET_LIB = 4.10.0
 
 # HIRESTXT_LIB can be
 # - a version number such as 0.5.0.2

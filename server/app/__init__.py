@@ -1,0 +1,1 @@
+# FujiNet Blog Server
