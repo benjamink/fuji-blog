@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include "api.h"
 #include "network.h"
+#include "ui.h"
 
 #define MAX_TITLE_LEN 80
 #define MAX_CATEGORY_LEN 64
@@ -18,19 +19,10 @@
 #include <conio.h>
 #include <apple2.h>
 #define HOME() clrscr()
-#define CLEAR_LINE()
-#define NORMAL_TEXT()
-#define BOLD_TEXT()
 #elif defined(_CMOC_VERSION_)
 #define HOME() clrscr()
-#define CLEAR_LINE()
-#define NORMAL_TEXT()
-#define BOLD_TEXT()
 #else
 #define HOME() printf("\033[H\033[J")
-#define CLEAR_LINE() printf("\033[K")
-#define NORMAL_TEXT() printf("\033[0m")
-#define BOLD_TEXT() printf("\033[1m")
 #endif
 
 /* Forward declarations */
@@ -61,7 +53,9 @@ int screen_width = 40;  /* Detect 40 or 80 column mode */
 char server_url[256] = "http://192.168.15.35:8001";
 
 /* Shared BSS buffers — menu functions never run concurrently so one copy each
-   covers all callers. Keeps the apple2 BSS segment within its size limit. */
+   covers all callers. Keeps the apple2 BSS segment within its size limit.
+   s_titles is limited to MAX_API_TITLE_LEN+1 = 65 bytes per entry (64 chars).
+   s_json_buf is 1400 bytes: covers title(64)+cat(64)+body(1024)+overhead(~100). */
 static char s_spec[300];
 static char s_ids[MAX_API_POSTS][MAX_API_ID_LEN + 1];
 static char s_titles[MAX_API_POSTS][MAX_API_TITLE_LEN + 1];
@@ -69,258 +63,65 @@ static int  s_pub[MAX_API_POSTS];
 static char s_path[16];
 static char s_val[MAX_API_TITLE_LEN + 1];
 static char s_body[MAX_API_MARKDOWN_BODY_LEN + 1];
-static char s_json_buf[1800]; /* 1800 is ample for real Apple II posts; was 2048 */
+static char s_json_buf[1400];
 static char s_id_result[MAX_API_ID_LEN + 1];
 
 /* Month abbreviations packed as a flat string — RODATA, not BSS.
    Access month i with: %.3s applied to (s_months_str + i*3)            */
 static const char s_months_str[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
-int main(void)
-{
-    get_screen_width();
-    show_splash();
-    
-    while (1) {
-        main_menu();
-    }
-    
-    return 0;
-}
+/* ── Internal helpers ──────────────────────────────────────── */
 
-void get_screen_width(void)
+/* Show a loading screen for a given section title. */
+static void screen_loading(const char *title)
 {
-#ifdef __CC65__
-    screen_width = (videomode(VIDEOMODE_80COL) >= 0) ? 80 : 40;
-#elif defined(_CMOC_VERSION_)
-    screen_width = 40;
-#else
-    screen_width = 80;
-#endif
-}
-
-void show_splash(void)
-{
-    AdapterConfigExtended ace;
-
     HOME();
-    BOLD_TEXT();
-    printf("========================================\n");
-    printf("    FujiNet Apple IIc Blog Client\n");
-    printf("========================================\n");
-    NORMAL_TEXT();
-    printf("\nDetected screen width: %d columns\n", screen_width);
-    printf("\nInitializing FujiNet...\n");
-    
-    if (!fuji_get_adapter_config_extended(&ace)) {
-        printf("ERROR: FujiNet not detected!\n");
-        printf("Press any key to exit.\n");
-        getchar();
-        exit(1);
-    }
-    
-    printf("FujiNet Version: %s\n", ace.fn_version);
-    printf("Adapter SSID: %s\n", ace.ssid);
-    printf("\nPress any key to continue...\n");
+    ui_header(title, "");
+    ui_hline();
+    printf("\n  Loading...\n");
+}
+
+/* Show a connection/parse error and wait for a keypress. */
+static void screen_error(const char *msg, int code)
+{
+    printf("\n  %s: %d\n\n", msg, code);
+    ui_hline();
+    printf("  Press any key...\n");
     getchar();
 }
 
-void main_menu(void)
+/* Draw a footer separator and wait for any keypress. */
+static void wait_key(void)
 {
-    int choice;
-    
-    HOME();
-    BOLD_TEXT();
-    if (screen_width >= 40) {
-        printf("=== MAIN MENU ===\n");
-    }
-    NORMAL_TEXT();
-    
-    printf("\n1. List Posts\n");
-    printf("2. New Post\n");
-    printf("3. Edit Post\n");
-    printf("4. Toggle Publish\n");
-    printf("5. Delete Post\n");
-    printf("6. Stats\n");
-    printf("7. Network Status\n");
-    printf("8. Configuration\n");
-    printf("Q. Quit\n");
-
-    printf("\nSelect option: ");
-    choice = getchar();
-    choice = toupper(choice);
-
-    switch (choice) {
-        case '1':
-            list_posts();
-            break;
-        case '2':
-            new_post();
-            break;
-        case '3':
-            edit_post();
-            break;
-        case '4':
-            toggle_publish();
-            break;
-        case '5':
-            delete_post();
-            break;
-        case '6':
-            show_stats();
-            break;
-        case '7':
-            show_network_status();
-            break;
-        case '8':
-            show_config();
-            break;
-        case 'Q':
-            HOME();
-            printf("Goodbye!\n");
-            exit(0);
-        default:
-            break;
-    }
+    ui_hline();
+    printf("  Press any key...\n");
+    getchar();
 }
 
-void show_network_status(void)
-{
-    AdapterConfigExtended ace;
-    int i;
-    int ch;
-
-    do {
-        HOME();
-        BOLD_TEXT();
-        printf("NETWORK STATUS\n");
-        NORMAL_TEXT();
-        printf("================\n\n");
-
-        if (fuji_get_adapter_config_extended(&ace)) {
-            printf("FujiNet: Connected\n");
-            printf("Version: %s\n", ace.fn_version);
-            printf("SSID: %s\n", ace.ssid);
-            printf("MAC: ");
-            for (i = 0; i < 6; i++) {
-                printf("%02X", ace.macAddress[i]);
-                if (i < 5) printf(":");
-            }
-            printf("\n");
-        } else {
-            printf("FujiNet: NOT DETECTED\n");
-        }
-
-        printf("\nServer: %s\n", server_url);
-        printf("Screen: %d columns\n", screen_width);
-        printf("\nT. Test Server  Q. Back\n");
-        printf("Select: ");
-
-        ch = toupper(getchar());
-        if (ch == 'T') test_server();
-    } while (ch != 'Q');
-}
-
-void test_server(void)
-{
-    int bytes;
-    int ch;
-
-    do {
-        HOME();
-        BOLD_TEXT();
-        printf("SERVER TEST\n");
-        NORMAL_TEXT();
-        printf("===========\n");
-        printf("%s\n\n", server_url);
-        printf("G. GET  /api/ping\n");
-        printf("P. PUT  /api/posts (create test)\n");
-        printf("Q. Back\n\n");
-        printf("Select: ");
-
-        ch = toupper(getchar());
-
-        if (ch == 'G') {
-            HOME();
-            printf("GET /api/ping...\n\n");
-            bytes = network_get(server_url, "/api/ping",
-                                (uint8_t *)s_val, (int)sizeof(s_val) - 1);
-            if (bytes > 0) {
-                s_val[bytes] = '\0';
-                printf("OK! %d bytes:\n%s\n", bytes, s_val);
-            } else {
-                printf("FAILED (status %d)\n",
-                       (int)network_get_last_error());
-            }
-            printf("\nPress any key...\n");
-            getchar();
-
-        } else if (ch == 'P') {
-            static const char test_json[] =
-                "{\"title\":\"Test\",\"markdown_body\":\"# Test\","
-                "\"category\":\"test\",\"published\":false}";
-            uint8_t perr;
-            int16_t pn;
-            HOME();
-            printf("PUT /api/posts (test create)...\n\n");
-            snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts", server_url);
-            perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
-            if (perr) {
-                printf("Open error: %d\n", (int)perr);
-            } else {
-                network_write(s_spec, (const uint8_t *)test_json,
-                              (uint16_t)(sizeof(test_json) - 1));
-                printf("Waiting for response...\n");
-                perr = network_json_parse(s_spec);
-                s_id_result[0] = '\0';
-                pn = network_json_query(s_spec, "/id", s_id_result);
-                network_close(s_spec);
-                if (pn > 0 && s_id_result[0]) {
-                    printf("OK! Post ID:\n%s\n", s_id_result);
-                } else {
-                    printf("FAILED (parse err %d)\n", (int)perr);
-                }
-            }
-            printf("\nPress any key...\n");
-            getchar();
-        }
-    } while (ch != 'Q');
-}
-
-void list_posts(void)
+/* Fetch /api/posts/summaries (with optional suffix, e.g. "?published_only=true")
+   into s_ids / s_titles / s_pub.  Returns count (>=0) or -1 on error
+   (error already displayed to the user). */
+static int fetch_post_list(const char *suffix)
 {
     int count;
     int i;
-    int ch;
-    int tlen;
-    int maxw;
-    uint8_t perr;
     int16_t pn;
+    uint8_t perr;
 
     count = 0;
-
-    HOME();
-    BOLD_TEXT();
-    printf("PUBLISHED POSTS\n");
-    NORMAL_TEXT();
-    printf("Loading...\n");
-
     snprintf(s_spec, sizeof(s_spec),
-             "N1:%s/api/posts/summaries?published_only=true", server_url);
+             "N1:%s/api/posts/summaries%s", server_url, suffix);
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
     if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
-        return;
+        screen_error("Connection error", (int)perr);
+        return -1;
     }
     perr = network_json_parse(s_spec);
     if (perr) {
-        printf("Parse error: %d\n", (int)perr);
+        printf("\n  Parse error: %d\n", (int)perr);
         network_close(s_spec);
-        printf("Press any key...\n");
-        getchar();
-        return;
+        wait_key();
+        return -1;
     }
 
     for (i = 0; i < MAX_API_POSTS; i++) {
@@ -345,27 +146,32 @@ void list_posts(void)
         count++;
     }
     network_close(s_spec);
+    return count;
+}
 
-    HOME();
-    BOLD_TEXT();
-    printf("PUBLISHED POSTS\n");
-    NORMAL_TEXT();
-    printf("===============\n\n");
+/* Display a numbered post list and prompt for a selection.
+   Returns the 0-based index chosen, or -1 if the user cancelled or
+   there are no posts (error/empty already displayed). */
+static int pick_from_list(int count)
+{
+    int i, ch, tlen, maxw;
 
     if (count == 0) {
-        printf("No published posts found.\n");
-        printf("\nPress any key...\n");
-        getchar();
-        return;
+        printf("  No posts found.\n\n");
+        wait_key();
+        return -1;
     }
 
-    maxw = screen_width - 5;
+    maxw = screen_width - (screen_width >= 80 ? 28 : 12);
+    if (maxw < 4) maxw = 4;
     for (i = 0; i < count; i++) {
         tlen = (int)strlen(s_titles[i]);
         if (tlen > maxw) s_titles[i][maxw] = '\0';
-        printf("%d. %s%s\n", i + 1, s_titles[i], s_pub[i] ? "" : " [D]");
+        ui_post_row(i + 1, s_pub[i], s_titles[i]);
     }
-    printf("\nSelect (1-%d) or Q: ", count);
+    printf("\n");
+    ui_hline();
+    printf("  Select (1-%d) or Q: ", count);
 
 #ifdef __CC65__
     ch = cgetc();
@@ -373,10 +179,240 @@ void list_posts(void)
     ch = getchar();
 #endif
     putchar('\n');
-    if (ch >= '1' && ch < '1' + count) {
-        view_post(s_ids[ch - '1']);
+
+    if (ch >= '1' && ch < '1' + count)
+        return ch - '1';
+    return -1;
+}
+
+/* ── main ──────────────────────────────────────────────────── */
+
+int main(void)
+{
+    get_screen_width();
+    show_splash();
+
+    while (1) {
+        main_menu();
+    }
+
+    return 0;
+}
+
+void get_screen_width(void)
+{
+#ifdef __CC65__
+    screen_width = (videomode(VIDEOMODE_80COL) >= 0) ? 80 : 40;
+#elif defined(_CMOC_VERSION_)
+    screen_width = 40;
+#else
+    screen_width = 80;
+#endif
+}
+
+/* ── show_splash ───────────────────────────────────────────── */
+
+void show_splash(void)
+{
+    AdapterConfigExtended ace;
+    int i;
+
+    HOME();
+    ui_header("FUJINET BLOG", "");
+    ui_hline();
+    printf("\n  Initializing FujiNet...\n\n");
+
+    if (!fuji_get_adapter_config_extended(&ace)) {
+        printf("  ERROR: FujiNet not detected!\n");
+        printf("  Check hardware and restart.\n\n");
+        wait_key();
+        exit(1);
+    }
+
+    printf("  FujiNet Version : %s\n", ace.fn_version);
+    printf("  Adapter SSID    : %s\n", ace.ssid);
+    printf("  MAC             : ");
+    for (i = 0; i < 6; i++) {
+        printf("%02X", ace.macAddress[i]);
+        if (i < 5) printf(":");
+    }
+    printf("\n");
+    printf("  Screen          : %d columns\n\n", screen_width);
+
+    wait_key();
+}
+
+/* ── main_menu ─────────────────────────────────────────────── */
+
+void main_menu(void)
+{
+    int choice;
+
+    HOME();
+    ui_header("MAIN MENU", "Q: Quit");
+    ui_hline();
+    printf("\n");
+    ui_indent(); printf("1.  List Posts\n");
+    ui_indent(); printf("2.  New Post\n");
+    ui_indent(); printf("3.  Edit Post\n");
+    ui_indent(); printf("4.  Toggle Publish\n");
+    ui_indent(); printf("5.  Delete Post\n");
+    ui_indent(); printf("6.  Stats\n");
+    ui_indent(); printf("7.  Network Status\n");
+    ui_indent(); printf("8.  Configuration\n");
+    ui_indent(); printf("Q.  Quit\n");
+    printf("\n");
+    ui_hline();
+    printf("  Select option: ");
+
+    choice = toupper(getchar());
+
+    switch (choice) {
+        case '1': list_posts();          break;
+        case '2': new_post();            break;
+        case '3': edit_post();           break;
+        case '4': toggle_publish();      break;
+        case '5': delete_post();         break;
+        case '6': show_stats();          break;
+        case '7': show_network_status(); break;
+        case '8': show_config();         break;
+        case 'Q': HOME(); exit(0);
+        default:  break;
     }
 }
+
+/* ── show_network_status ───────────────────────────────────── */
+
+void show_network_status(void)
+{
+    AdapterConfigExtended ace;
+    int i;
+    int ch;
+
+    do {
+        HOME();
+        ui_header("NETWORK STATUS", "T: Test  Q: Back");
+        ui_hline();
+        printf("\n");
+
+        if (fuji_get_adapter_config_extended(&ace)) {
+            printf("  Status  : Connected\n");
+            printf("  Version : %s\n", ace.fn_version);
+            printf("  SSID    : %s\n", ace.ssid);
+            printf("  MAC     : ");
+            for (i = 0; i < 6; i++) {
+                printf("%02X", ace.macAddress[i]);
+                if (i < 5) printf(":");
+            }
+            printf("\n");
+        } else {
+            printf("  Status  : NOT DETECTED\n");
+        }
+
+        printf("\n");
+        printf("  Server  : %s\n", server_url);
+        printf("  Screen  : %d columns\n\n", screen_width);
+        ui_hline();
+        printf("  T: Test Server   Q: Back   Select: ");
+
+        ch = toupper(getchar());
+        if (ch == 'T') test_server();
+    } while (ch != 'Q');
+}
+
+/* ── test_server ───────────────────────────────────────────── */
+
+void test_server(void)
+{
+    int bytes;
+    int ch;
+
+    do {
+        HOME();
+        ui_header("SERVER TEST", "Q: Back");
+        ui_hline();
+        printf("\n  %s\n\n", server_url);
+        ui_indent(); printf("G.  GET  /api/ping\n");
+        ui_indent(); printf("P.  PUT  /api/posts (test create)\n");
+        ui_indent(); printf("Q.  Back\n\n");
+        ui_hline();
+        printf("  Select: ");
+
+        ch = toupper(getchar());
+
+        if (ch == 'G') {
+            HOME();
+            ui_header("SERVER TEST", "GET /api/ping");
+            ui_hline();
+            printf("\n  Sending GET /api/ping...\n\n");
+            bytes = network_get(server_url, "/api/ping",
+                                (uint8_t *)s_val, (int)sizeof(s_val) - 1);
+            if (bytes > 0) {
+                s_val[bytes] = '\0';
+                printf("  OK!  %d bytes received:\n  %s\n", bytes, s_val);
+            } else {
+                printf("  FAILED  (error %d)\n", (int)network_get_last_error());
+            }
+            printf("\n");
+            wait_key();
+
+        } else if (ch == 'P') {
+            static const char test_json[] =
+                "{\"title\":\"Test\",\"markdown_body\":\"# Test\","
+                "\"category\":\"test\",\"published\":false}";
+            uint8_t perr;
+            int16_t pn;
+
+            HOME();
+            ui_header("SERVER TEST", "PUT /api/posts");
+            ui_hline();
+            printf("\n  Sending PUT /api/posts...\n\n");
+            snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts", server_url);
+            perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
+            if (perr) {
+                printf("  Open error: %d\n", (int)perr);
+            } else {
+                network_write(s_spec, (const uint8_t *)test_json,
+                              (uint16_t)(sizeof(test_json) - 1));
+                printf("  Waiting for response...\n");
+                perr = network_json_parse(s_spec);
+                s_id_result[0] = '\0';
+                pn = network_json_query(s_spec, "/id", s_id_result);
+                network_close(s_spec);
+                if (pn > 0 && s_id_result[0]) {
+                    printf("  OK!  Post created:\n  %s\n", s_id_result);
+                } else {
+                    printf("  FAILED  (parse error %d)\n", (int)perr);
+                }
+            }
+            printf("\n");
+            wait_key();
+        }
+    } while (ch != 'Q');
+}
+
+/* ── list_posts ────────────────────────────────────────────── */
+
+void list_posts(void)
+{
+    int count;
+    int sel;
+
+    screen_loading("PUBLISHED POSTS");
+    count = fetch_post_list("?published_only=true");
+    if (count < 0) return;
+
+    HOME();
+    ui_header("PUBLISHED POSTS", "Q: Back");
+    ui_hline();
+    printf("\n");
+
+    sel = pick_from_list(count);
+    if (sel >= 0)
+        view_post(s_ids[sel]);
+}
+
+/* ── view_post ─────────────────────────────────────────────── */
 
 void view_post(const char *id)
 {
@@ -387,35 +423,34 @@ void view_post(const char *id)
     uint8_t perr;
 
     HOME();
-    printf("Loading post...\n");
+    ui_header("VIEW POST", "");
+    ui_hline();
+    printf("\n  Loading...\n");
 
     snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/markdown",
              server_url, id);
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
     if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
+        screen_error("Connection error", (int)perr);
         return;
     }
     perr = network_json_parse(s_spec);
-    s_val[0] = '\0';   /* s_val used for title — view_post doesn't use it otherwise */
+    s_val[0]  = '\0';
     s_body[0] = '\0';
     network_json_query(s_spec, "/title", s_val);
     network_json_query(s_spec, "/markdown_body", s_body);
     network_close(s_spec);
 
-    /* Characters of body text per page: 3 rows for header/footer
-       leaves (screen rows - 3) * screen_width characters visible */
-    page_size = (screen_width >= 80) ? 80 * 18 : 40 * 16;
+    /* Characters per page: leave 4 rows for header + title + footer. */
+    page_size = (screen_width >= 80) ? 80 * 17 : 40 * 16;
 
     p = s_body;
     do {
         HOME();
-        BOLD_TEXT();
-        printf("%s\n", s_val);   /* s_val holds the title */
-        NORMAL_TEXT();
-        printf("----------------------------------------\n");
+        ui_header("VIEW POST", *p ? "Spc: More  Q: Back" : "Any: Back");
+        ui_hline();
+        printf("\n  %s\n", s_val);   /* actual post title */
+        ui_hline();
 
         chars = 0;
         while (*p && chars < page_size) {
@@ -423,15 +458,17 @@ void view_post(const char *id)
             chars++;
         }
 
+        printf("\n");
+        ui_hline();
         if (*p) {
-            printf("\n[Space]=more  [Q]=back\n");
+            printf("  [Space]: more    [Q]: back\n");
 #ifdef __CC65__
             ch = toupper(cgetc());
 #else
             ch = toupper(getchar());
 #endif
         } else {
-            printf("\n\n[END] Press any key...\n");
+            printf("  [END]  Press any key...\n");
 #ifdef __CC65__
             cgetc();
 #else
@@ -442,33 +479,35 @@ void view_post(const char *id)
     } while (*p && ch != 'Q');
 }
 
+/* ── new_post ──────────────────────────────────────────────── */
+
 void new_post(void)
 {
-    /* s_val = title, s_id_result = category — free at this call site */
-    int i = 0;
+    /* s_val = title, s_id_result = category */
+    int i;
     int ch;
     int json_len;
     uint8_t perr;
     int16_t pn;
 
-    s_val[0] = '\0';
+    i = 0;
+    s_val[0]       = '\0';
     s_id_result[0] = '\0';
-    s_body[0] = '\0';
+    s_body[0]      = '\0';
 
     HOME();
-    BOLD_TEXT();
-    printf("NEW POST\n");
-    NORMAL_TEXT();
-    printf("========\n\n");
-
-    printf("Title: ");
+    ui_header("NEW POST", "Esc: Cancel");
+    ui_hline();
+    printf("\n");
+    ui_indent(); printf("Title    : ");
     read_line(s_val, MAX_TITLE_LEN);
-
-    printf("\nCategory: ");
+    printf("\n");
+    ui_indent(); printf("Category : ");
     read_line(s_id_result, MAX_CATEGORY_LEN);
-
-    printf("\nContent (press ESC when done):\n");
-    printf("----------------------------------------\n");
+    printf("\n");
+    ui_hline();
+    printf("  Content (ESC when done):\n");
+    ui_hline();
 
 #ifdef __CC65__
     while (i < MAX_API_MARKDOWN_BODY_LEN) {
@@ -495,17 +534,21 @@ void new_post(void)
 #endif
     s_body[i] = '\0';
 
-    printf("\n----------------------------------------\n");
-    printf("Title: %s\n", s_val);
-    printf("Category: %s\n", s_id_result);
-    printf("Length: %d chars\n", i);
-    printf("\nSave as draft? (Y/N): ");
+    HOME();
+    ui_header("NEW POST", "Save Draft?");
+    ui_hline();
+    printf("\n");
+    printf("  Title    : %s\n", s_val);
+    printf("  Category : %s\n", s_id_result);
+    printf("  Length   : %d chars\n\n", i);
+    ui_hline();
+    printf("  Save as draft? (Y/N): ");
 
     if (toupper(getchar()) == 'Y') {
         json_len = build_update_json(s_val, s_id_result, s_body,
                                      s_json_buf, sizeof(s_json_buf));
         if (json_len <= 0) {
-            printf("\nError building request.\n");
+            printf("\n  Error building request.\n");
         } else {
             snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts", server_url);
             /* Apple IIc IWM firmware bug: network_http_set_channel_mode() always
@@ -513,160 +556,99 @@ void new_post(void)
                PUT mode in DATA mode (mode 0) correctly stores writes to postData. */
             perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
             if (perr) {
-                printf("\nOpen error: %d\n", (int)perr);
+                printf("\n  Open error: %d\n", (int)perr);
             } else {
                 network_write(s_spec, (uint8_t *)s_json_buf, (uint16_t)json_len);
-                printf("\nSending to server...\n");
+                printf("\n  Sending to server...\n");
                 perr = network_json_parse(s_spec);
                 s_id_result[0] = '\0';
                 pn = network_json_query(s_spec, "/id", s_id_result);
                 network_close(s_spec);
                 if (pn > 0 && s_id_result[0]) {
-                    printf("Draft saved!\nID: %s\n", s_id_result);
+                    printf("  Draft saved!\n");
                 } else {
-                    printf("Server error (parse %d).\n", (int)perr);
-                    printf("Check server URL and connection.\n");
+                    printf("  Server error (parse %d).\n", (int)perr);
                 }
             }
         }
+    } else {
+        printf("\n  Cancelled.\n");
     }
 
-    printf("\nPress any key to return...\n");
-    getchar();
+    printf("\n");
+    wait_key();
 }
+
+/* ── edit_post ─────────────────────────────────────────────── */
 
 void edit_post(void)
 {
-    /* s_val = edit_title, s_id_result = edit_cat — free at this call site */
+    /* s_val = title, s_id_result = category */
     int count;
-    int i;
-    int ch;
-    int tlen;
-    int maxw;
     int sel;
+    int ch;
     int json_len;
     uint8_t perr;
     int16_t pn;
 
-    count = 0;
+    /* --- Phase 1: load and display post list --- */
+    screen_loading("EDIT POST");
+    count = fetch_post_list("");
+    if (count < 0) return;
 
-    /* --- Phase 1: load post list --- */
     HOME();
-    BOLD_TEXT();
-    printf("EDIT POST\n");
-    NORMAL_TEXT();
-    printf("Loading...\n");
+    ui_header("EDIT POST", "Q: Back");
+    ui_hline();
+    printf("\n");
 
-    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/summaries", server_url);
-    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
-    if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
-        return;
-    }
-    perr = network_json_parse(s_spec);
-    if (perr) {
-        printf("Parse error: %d\n", (int)perr);
-        network_close(s_spec);
-        printf("Press any key...\n");
-        getchar();
-        return;
-    }
+    sel = pick_from_list(count);
+    if (sel < 0) return;
 
-    for (i = 0; i < MAX_API_POSTS; i++) {
-        snprintf(s_path, sizeof(s_path), "/%d/id", i);
-        s_val[0] = '\0';
-        pn = network_json_query(s_spec, s_path, s_val);
-        if (pn <= 0 || !s_val[0]) break;
-        strncpy(s_ids[i], s_val, MAX_API_ID_LEN);
-        s_ids[i][MAX_API_ID_LEN] = '\0';
-
-        snprintf(s_path, sizeof(s_path), "/%d/title", i);
-        s_val[0] = '\0';
-        network_json_query(s_spec, s_path, s_val);
-        strncpy(s_titles[i], s_val, MAX_API_TITLE_LEN);
-        s_titles[i][MAX_API_TITLE_LEN] = '\0';
-
-        snprintf(s_path, sizeof(s_path), "/%d/published", i);
-        s_val[0] = '\0';
-        network_json_query(s_spec, s_path, s_val);
-        s_pub[i] = (strcmp(s_val, "true") == 0);
-
-        count++;
-    }
-    network_close(s_spec);
-
-    /* --- Phase 2: select post --- */
+    /* --- Phase 2: load selected post --- */
     HOME();
-    BOLD_TEXT();
-    printf("EDIT POST\n");
-    NORMAL_TEXT();
-    printf("=========\n\n");
-
-    if (count == 0) {
-        printf("No posts found.\n\nPress any key...\n");
-        getchar();
-        return;
-    }
-
-    maxw = screen_width - 8;
-    for (i = 0; i < count; i++) {
-        tlen = (int)strlen(s_titles[i]);
-        if (tlen > maxw) s_titles[i][maxw] = '\0';
-        printf("%d. [%s] %s\n", i + 1, s_pub[i] ? "P" : "D", s_titles[i]);
-    }
-    printf("\nSelect (1-%d) or Q: ", count);
-
-#ifdef __CC65__
-    ch = cgetc();
-#else
-    ch = getchar();
-#endif
-    putchar('\n');
-    if (ch < '1' || ch >= '1' + count) return;
-    sel = ch - '1';
-
-    /* --- Phase 3: load selected post --- */
-    HOME();
-    printf("Loading post...\n");
+    ui_header("EDIT POST", "");
+    ui_hline();
+    printf("\n  Loading post...\n");
 
     snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/markdown",
              server_url, s_ids[sel]);
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
     if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
+        screen_error("Connection error", (int)perr);
         return;
     }
     perr = network_json_parse(s_spec);
-    s_val[0]      = '\0';
+    s_val[0]       = '\0';
     s_id_result[0] = '\0';
-    s_body[0]     = '\0';
+    s_body[0]      = '\0';
     network_json_query(s_spec, "/title", s_val);
     network_json_query(s_spec, "/category", s_id_result);
     network_json_query(s_spec, "/markdown_body", s_body);
     network_close(s_spec);
 
-    /* --- Phase 4: edit fields --- */
+    /* --- Phase 3: edit fields --- */
     HOME();
-    BOLD_TEXT();
-    printf("EDIT POST\n");
-    NORMAL_TEXT();
-    printf("=========\n\n");
-
-    printf("Title: ");
+    ui_header("EDIT POST", "Esc: Keep  Enter: Change");
+    ui_hline();
+    printf("\n");
+    ui_indent(); printf("Title    : ");
     read_line_with_default(s_val, (int)sizeof(s_val));
-
-    printf("\nCategory: ");
+    printf("\n");
+    ui_indent(); printf("Category : ");
     read_line_with_default(s_id_result, MAX_API_CATEGORY_LEN + 1);
-
-    printf("\nBody: %d chars\n", (int)strlen(s_body));
+    printf("\n  Body: %d chars\n", (int)strlen(s_body));
     body_editor();
 
-    /* --- Phase 5: confirm and PUT --- */
-    printf("Save changes? (Y/N): ");
+    /* --- Phase 4: confirm and PUT --- */
+    HOME();
+    ui_header("EDIT POST", "Y: Save  N: Cancel");
+    ui_hline();
+    printf("\n");
+    printf("  Title    : %s\n", s_val);
+    printf("  Category : %s\n\n", s_id_result);
+    ui_hline();
+    printf("  Save changes? (Y/N): ");
+
 #ifdef __CC65__
     ch = toupper(cgetc());
 #else
@@ -675,145 +657,76 @@ void edit_post(void)
     putchar('\n');
 
     if (ch != 'Y') {
-        printf("\nCancelled.\n");
-        printf("Press any key...\n");
-        getchar();
+        printf("\n  Cancelled.\n\n");
+        wait_key();
         return;
     }
 
     json_len = build_update_json(s_val, s_id_result, s_body,
                                  s_json_buf, sizeof(s_json_buf));
     if (json_len <= 0) {
-        printf("\nError building request.\n");
+        printf("\n  Error building request.\n");
     } else {
         snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s",
                  server_url, s_ids[sel]);
         /* Same PUT + network_write workaround as new_post */
         perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
         if (perr) {
-            printf("\nOpen error: %d\n", (int)perr);
+            printf("\n  Open error: %d\n", (int)perr);
         } else {
             network_write(s_spec, (uint8_t *)s_json_buf, (uint16_t)json_len);
-            printf("Saving...\n");
+            printf("\n  Saving...\n");
             perr = network_json_parse(s_spec);
             s_id_result[0] = '\0';
             pn = network_json_query(s_spec, "/id", s_id_result);
             network_close(s_spec);
             if (pn > 0 && s_id_result[0]) {
-                printf("\nSaved!\n");
+                printf("  Saved!\n");
             } else {
-                printf("Server error (parse %d).\n", (int)perr);
+                printf("  Server error (parse %d).\n", (int)perr);
             }
         }
     }
 
-    printf("\nPress any key...\n");
-    getchar();
+    printf("\n");
+    wait_key();
 }
+
+/* ── toggle_publish ────────────────────────────────────────── */
 
 void toggle_publish(void)
 {
-    /* s_val reused for publish JSON — free after post-list queries */
+    /* s_val reused for publish JSON after post-list queries */
     int count;
-    int i;
-    int ch;
-    int tlen;
-    int maxw;
     int sel;
     int new_pub;
+    int ch;
     uint8_t perr;
     int16_t pn;
 
-    count = 0;
+    screen_loading("TOGGLE PUBLISH");
+    count = fetch_post_list("");
+    if (count < 0) return;
 
     HOME();
-    BOLD_TEXT();
-    printf("TOGGLE PUBLISH\n");
-    NORMAL_TEXT();
-    printf("Loading...\n");
+    ui_header("TOGGLE PUBLISH", "Q: Back");
+    ui_hline();
+    printf("\n");
 
-    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/summaries", server_url);
-    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
-    if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
-        return;
-    }
-    perr = network_json_parse(s_spec);
-    if (perr) {
-        printf("Parse error: %d\n", (int)perr);
-        network_close(s_spec);
-        printf("Press any key...\n");
-        getchar();
-        return;
-    }
+    sel = pick_from_list(count);
+    if (sel < 0) return;
 
-    for (i = 0; i < MAX_API_POSTS; i++) {
-        snprintf(s_path, sizeof(s_path), "/%d/id", i);
-        s_val[0] = '\0';
-        pn = network_json_query(s_spec, s_path, s_val);
-        if (pn <= 0 || !s_val[0]) break;
-        strncpy(s_ids[i], s_val, MAX_API_ID_LEN);
-        s_ids[i][MAX_API_ID_LEN] = '\0';
-
-        snprintf(s_path, sizeof(s_path), "/%d/title", i);
-        s_val[0] = '\0';
-        network_json_query(s_spec, s_path, s_val);
-        strncpy(s_titles[i], s_val, MAX_API_TITLE_LEN);
-        s_titles[i][MAX_API_TITLE_LEN] = '\0';
-
-        snprintf(s_path, sizeof(s_path), "/%d/published", i);
-        s_val[0] = '\0';
-        network_json_query(s_spec, s_path, s_val);
-        s_pub[i] = (strcmp(s_val, "true") == 0);
-
-        count++;
-    }
-    network_close(s_spec);
-
-    HOME();
-    BOLD_TEXT();
-    printf("TOGGLE PUBLISH\n");
-    NORMAL_TEXT();
-    printf("==============\n\n");
-
-    if (count == 0) {
-        printf("No posts found.\n");
-        printf("\nPress any key...\n");
-        getchar();
-        return;
-    }
-
-    maxw = screen_width - 8;
-    for (i = 0; i < count; i++) {
-        tlen = (int)strlen(s_titles[i]);
-        if (tlen > maxw) s_titles[i][maxw] = '\0';
-        printf("%d. [%s] %s\n", i + 1, s_pub[i] ? "P" : "D", s_titles[i]);
-    }
-    printf("\nSelect (1-%d) or Q: ", count);
-
-#ifdef __CC65__
-    ch = cgetc();
-#else
-    ch = getchar();
-#endif
-    putchar('\n');
-
-    if (ch < '1' || ch >= '1' + count) return;
-
-    sel = ch - '1';
     new_pub = !s_pub[sel];
 
     HOME();
-    BOLD_TEXT();
-    printf("TOGGLE PUBLISH\n");
-    NORMAL_TEXT();
-    printf("==============\n\n");
-    printf("Post: %s\n\n", s_titles[sel]);
-    printf("Now: %s\n", s_pub[sel] ? "Published" : "Draft");
-    printf("Set: %s\n\n", new_pub ? "Published" : "Draft");
-    printf("Confirm? (Y/N): ");
+    ui_header("TOGGLE PUBLISH", "Y: Confirm  N: Cancel");
+    ui_hline();
+    printf("\n");
+    printf("  Post    : %s\n\n", s_titles[sel]);
+    printf("  Current : %s\n", s_pub[sel] ? "Published" : "Draft");
+    printf("  New     : %s\n\n", new_pub   ? "Published" : "Draft");
+    ui_hline();
+    printf("  Confirm? (Y/N): ");
 
 #ifdef __CC65__
     ch = toupper(cgetc());
@@ -831,128 +744,57 @@ void toggle_publish(void)
 
     perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
     if (perr) {
-        printf("\nOpen error: %d\n", (int)perr);
+        printf("\n  Open error: %d\n", (int)perr);
     } else {
         network_write(s_spec, (uint8_t *)s_val, (uint16_t)strlen(s_val));
-        printf("Sending...\n");
+        printf("\n  Sending...\n");
         perr = network_json_parse(s_spec);
         s_id_result[0] = '\0';
         pn = network_json_query(s_spec, "/id", s_id_result);
         network_close(s_spec);
         if (pn > 0 && s_id_result[0]) {
-            printf("\nDone! %s -> %s\n", s_titles[sel],
-                   new_pub ? "Published" : "Draft");
+            printf("  Done!  '%s'  ->  %s\n",
+                   s_titles[sel], new_pub ? "Published" : "Draft");
         } else {
-            printf("Server error (parse %d).\n", (int)perr);
+            printf("  Server error (parse %d).\n", (int)perr);
         }
     }
 
-    printf("\nPress any key...\n");
-    getchar();
+    printf("\n");
+    wait_key();
 }
+
+/* ── delete_post ───────────────────────────────────────────── */
 
 void delete_post(void)
 {
     int count;
-    int i;
-    int ch;
-    int tlen;
-    int maxw;
     int sel;
+    int ch;
     uint8_t perr;
     int16_t pn;
 
-    count = 0;
+    screen_loading("DELETE POST");
+    count = fetch_post_list("");
+    if (count < 0) return;
 
-    /* --- Phase 1: load post list --- */
     HOME();
-    BOLD_TEXT();
-    printf("DELETE POST\n");
-    NORMAL_TEXT();
-    printf("Loading...\n");
+    ui_header("DELETE POST", "Q: Back");
+    ui_hline();
+    printf("\n");
 
-    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/summaries", server_url);
-    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
-    if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
-        return;
-    }
-    perr = network_json_parse(s_spec);
-    if (perr) {
-        printf("Parse error: %d\n", (int)perr);
-        network_close(s_spec);
-        printf("Press any key...\n");
-        getchar();
-        return;
-    }
+    sel = pick_from_list(count);
+    if (sel < 0) return;
 
-    for (i = 0; i < MAX_API_POSTS; i++) {
-        snprintf(s_path, sizeof(s_path), "/%d/id", i);
-        s_val[0] = '\0';
-        pn = network_json_query(s_spec, s_path, s_val);
-        if (pn <= 0 || !s_val[0]) break;
-        strncpy(s_ids[i], s_val, MAX_API_ID_LEN);
-        s_ids[i][MAX_API_ID_LEN] = '\0';
-
-        snprintf(s_path, sizeof(s_path), "/%d/title", i);
-        s_val[0] = '\0';
-        network_json_query(s_spec, s_path, s_val);
-        strncpy(s_titles[i], s_val, MAX_API_TITLE_LEN);
-        s_titles[i][MAX_API_TITLE_LEN] = '\0';
-
-        snprintf(s_path, sizeof(s_path), "/%d/published", i);
-        s_val[0] = '\0';
-        network_json_query(s_spec, s_path, s_val);
-        s_pub[i] = (strcmp(s_val, "true") == 0);
-
-        count++;
-    }
-    network_close(s_spec);
-
-    /* --- Phase 2: select post --- */
     HOME();
-    BOLD_TEXT();
-    printf("DELETE POST\n");
-    NORMAL_TEXT();
-    printf("===========\n\n");
-
-    if (count == 0) {
-        printf("No posts found.\n");
-        printf("\nPress any key...\n");
-        getchar();
-        return;
-    }
-
-    maxw = screen_width - 8;
-    for (i = 0; i < count; i++) {
-        tlen = (int)strlen(s_titles[i]);
-        if (tlen > maxw) s_titles[i][maxw] = '\0';
-        printf("%d. [%s] %s\n", i + 1, s_pub[i] ? "P" : "D", s_titles[i]);
-    }
-    printf("\nSelect (1-%d) or Q: ", count);
-
-#ifdef __CC65__
-    ch = cgetc();
-#else
-    ch = getchar();
-#endif
-    putchar('\n');
-
-    if (ch < '1' || ch >= '1' + count) return;
-    sel = ch - '1';
-
-    /* --- Phase 3: confirm deletion --- */
-    HOME();
-    BOLD_TEXT();
-    printf("DELETE POST\n");
-    NORMAL_TEXT();
-    printf("===========\n\n");
-    printf("Post: %s\n\n", s_titles[sel]);
-    printf("PERMANENTLY DELETE?\n");
-    printf("Cannot be undone!\n\n");
-    printf("Confirm? (Y/N): ");
+    ui_header("DELETE POST", "Y: Delete  N: Cancel");
+    ui_hline();
+    printf("\n");
+    printf("  Post    : %s\n\n", s_titles[sel]);
+    printf("  ! PERMANENTLY DELETE !\n");
+    printf("    Cannot be undone!\n\n");
+    ui_hline();
+    printf("  Confirm? (Y/N): ");
 
 #ifdef __CC65__
     ch = toupper(cgetc());
@@ -963,8 +805,7 @@ void delete_post(void)
 
     if (ch != 'Y') return;
 
-    /* --- Phase 4: send DELETE via PUT workaround ---
-       Apple IIc IWM firmware: OPEN_MODE_HTTP_DELETE is untested; the
+    /* Apple IIc IWM firmware: OPEN_MODE_HTTP_DELETE is untested; the
        established workaround is OPEN_MODE_HTTP_PUT + network_write().
        The server PUT /api/posts/{id}/delete performs the deletion and
        returns {"id":"<uuid>"} so we can confirm success. */
@@ -972,24 +813,26 @@ void delete_post(void)
              server_url, s_ids[sel]);
     perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
     if (perr) {
-        printf("\nOpen error: %d\n", (int)perr);
+        printf("\n  Open error: %d\n", (int)perr);
     } else {
         network_write(s_spec, (const uint8_t *)"{}", 2);
-        printf("Deleting...\n");
+        printf("\n  Deleting...\n");
         perr = network_json_parse(s_spec);
         s_id_result[0] = '\0';
         pn = network_json_query(s_spec, "/id", s_id_result);
         network_close(s_spec);
         if (pn > 0 && s_id_result[0]) {
-            printf("\nDeleted: %s\n", s_titles[sel]);
+            printf("  Deleted: %s\n", s_titles[sel]);
         } else {
-            printf("Server error (parse %d).\n", (int)perr);
+            printf("  Server error (parse %d).\n", (int)perr);
         }
     }
 
-    printf("\nPress any key...\n");
-    getchar();
+    printf("\n");
+    wait_key();
 }
+
+/* ── read_line ─────────────────────────────────────────────── */
 
 /* Reads a line of input with backspace/delete support.
    Returns 1 if confirmed (Enter), 0 if cancelled (ESC). */
@@ -1033,9 +876,9 @@ int read_line(char *buf, int maxlen)
     return 1;
 }
 
-/* Show buf's current content and let the user edit it in-place.
-   On cc65: prints existing text then accepts input from that position.
-   On host: prints existing text; empty Enter keeps the old value. */
+/* ── read_line_with_default ────────────────────────────────── */
+
+/* Show buf's current content and let the user edit it in-place. */
 void read_line_with_default(char *buf, int maxlen)
 {
     int i;
@@ -1073,7 +916,7 @@ void read_line_with_default(char *buf, int maxlen)
 #endif
 }
 
-/* ---- full-screen word-processor body editor ---- */
+/* ── body_editor ───────────────────────────────────────────── */
 
 #define WP_HDR 2   /* header rows above edit area (title row + separator row) */
 
@@ -1193,10 +1036,7 @@ void body_editor(void)
     cols = screen_width;
 
     HOME();
-    BOLD_TEXT();
-    printf("BODY EDITOR");
-    NORMAL_TEXT();
-    printf("  ESC=done\n");
+    ui_header("BODY EDITOR", "Esc: Done");
     for (i = 0; i < cols; i++) putchar('-');
     putchar('\n');
 
@@ -1275,9 +1115,7 @@ void body_editor(void)
         if (text_changed || scroll_changed) {
 #ifdef __CC65__
             if (!scroll_changed && ch != 0x0D && ar - tr == old_cr) {
-                /* Single-line fast path: only repaint from edit point to EOL.
-                   For insertion: start at old_cc (new char + shifted tail).
-                   For backspace: start at ac (shifted tail + erased last char). */
+                /* Single-line fast path: only repaint from edit point to EOL. */
                 if (ch == 0x7F) { sl_col = ac;     sl_off = cursor; }
                 else             { sl_col = old_cc; sl_off = cursor - 1; }
                 gotoxy(sl_col, WP_HDR + (ar - tr));
@@ -1332,6 +1170,8 @@ void body_editor(void)
     }
 }
 
+/* ── show_stats ────────────────────────────────────────────── */
+
 void show_stats(void)
 {
     /* BSS strategy — no new static arrays are declared here:
@@ -1353,28 +1193,23 @@ void show_stats(void)
     ppm = (int *)s_body;   /* borrow first 12 ints (24 bytes) of s_body */
 
     /* ---- Phase 1: fetch ---- */
-    HOME();
-    BOLD_TEXT(); printf("BLOG STATS\n"); NORMAL_TEXT();
-    printf("Loading...\n");
+    screen_loading("BLOG STATS");
 
     snprintf(s_spec, sizeof(s_spec), "N1:%s/api/stats", server_url);
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
     if (perr) {
-        printf("Connection error: %d\n", (int)perr);
-        printf("Press any key...\n");
-        getchar();
+        screen_error("Connection error", (int)perr);
         return;
     }
     perr = network_json_parse(s_spec);
     if (perr) {
-        printf("Parse error: %d\n", (int)perr);
+        printf("\n  Parse error: %d\n", (int)perr);
         network_close(s_spec);
-        printf("Press any key...\n");
-        getchar();
+        wait_key();
         return;
     }
 
-    /* Scalar fields — use s_val as query result scratch (as usual) */
+    /* Scalar fields */
     s_val[0] = '\0';
     network_json_query(s_spec, "/total_posts", s_val);
     total_posts = atoi(s_val);
@@ -1391,7 +1226,7 @@ void show_stats(void)
     network_json_query(s_spec, "/year", s_val);
     year_val = atoi(s_val);
 
-    /* Categories — s_id_result used as path buffer (65 bytes >= 20 needed) */
+    /* Categories — s_id_result used as path buffer */
     for (i = 0; i < MAX_API_POSTS; i++) {
         snprintf(s_id_result, sizeof(s_id_result), "/categories/%d/name", i);
         s_val[0] = '\0';
@@ -1408,7 +1243,7 @@ void show_stats(void)
         cat_count++;
     }
 
-    /* Posts per month — stored in borrowed ppm[] window of s_body */
+    /* Posts per month */
     for (i = 0; i < 12; i++) {
         snprintf(s_id_result, sizeof(s_id_result), "/posts_per_month/%d", i);
         s_val[0] = '\0';
@@ -1421,29 +1256,32 @@ void show_stats(void)
 
     /* ---- Screen 1: Summary + Categories ---- */
     HOME();
-    BOLD_TEXT(); printf("BLOG STATS\n"); NORMAL_TEXT();
-    printf("==========\n\n");
-    printf("Posts: %d  Categories: %d\n", total_posts, total_cats);
+    ui_header("BLOG STATS", "Spc: Chart");
+    ui_hline();
+    printf("\n");
+    printf("  Posts      : %d\n", total_posts);
+    printf("  Categories : %d\n", total_cats);
     if (avg_bytes >= 1024)
-        printf("Avg size: %d KB\n", avg_bytes / 1024);
+        printf("  Avg size   : %d KB\n", avg_bytes / 1024);
     else
-        printf("Avg size: %d bytes\n", avg_bytes);
+        printf("  Avg size   : %d bytes\n", avg_bytes);
 
     if (cat_count > 0) {
-        printf("\nCATEGORIES\n");
-        printf("----------\n");
+        printf("\n");
+        ui_hline();
+        printf("\n");
 
         name_max = (screen_width >= 80) ? 20 : 14;
-        /* bar area: screen width minus name col, '|', and " NNN\n" (5 chars) */
-        bar_area = screen_width - name_max - 6;
+        /* bar area: screen width minus indent(2), name col, '| ', and " NNN\n" (5 chars) */
+        bar_area = screen_width - 2 - name_max - 7;
         if (bar_area < 4) bar_area = 4;
 
         for (i = 0; i < cat_count; i++) {
             nlen = (int)strlen(s_ids[i]);
             if (nlen > name_max) { s_ids[i][name_max] = '\0'; nlen = name_max; }
-            printf("%s", s_ids[i]);
+            printf("  %s", s_ids[i]);
             for (j = nlen; j < name_max; j++) putchar(' ');
-            putchar('|');
+            printf("| ");
             bar_len = (cat_max > 0)
                       ? (s_pub[i] * bar_area) / cat_max
                       : 0;
@@ -1452,29 +1290,34 @@ void show_stats(void)
         }
     }
 
-    printf("\nPress any key for chart...\n");
+    printf("\n");
+    ui_hline();
+    printf("  Press any key for monthly chart...\n");
     getchar();
 
     /* ---- Screen 2: Monthly Histogram ---- */
-    HOME();
-    BOLD_TEXT();
+    /* Reuse s_id_result (done with JSON queries) for header title string */
     if (year_val > 0)
-        printf("POSTS/MONTH (%d)\n", year_val);
+        snprintf(s_id_result, sizeof(s_id_result), "POSTS/MONTH %d", year_val);
     else
-        printf("POSTS/MONTH\n");
-    NORMAL_TEXT();
-    printf("=================\n\n");
+        snprintf(s_id_result, sizeof(s_id_result), "POSTS/MONTH");
 
-    /* "Jan|" = 4 chars; leave 5 chars for " NNN\n" */
-    bar_area = screen_width - 9;
+    HOME();
+    ui_header(s_id_result, "Any: Back");
+    ui_hline();
+    printf("\n");
+
+    /* "Mon| " = 5 chars; leave 5 chars for " NNN\n" on right */
+    bar_area = screen_width - 10;
     if (bar_area < 4) bar_area = 4;
 
     for (i = 0; i < 12; i++) {
-        /* Print 3-char month abbreviation from packed string */
+        /* 3-char month abbreviation from packed string */
+        printf("  ");
         putchar(s_months_str[i * 3]);
         putchar(s_months_str[i * 3 + 1]);
         putchar(s_months_str[i * 3 + 2]);
-        putchar('|');
+        printf("| ");
         bar_len = (ppm_max > 0)
                   ? (ppm[i] * bar_area) / ppm_max
                   : 0;
@@ -1484,9 +1327,11 @@ void show_stats(void)
         putchar('\n');
     }
 
-    printf("\nPress any key...\n");
-    getchar();
+    printf("\n");
+    wait_key();
 }
+
+/* ── show_config ───────────────────────────────────────────── */
 
 void show_config(void)
 {
@@ -1494,32 +1339,30 @@ void show_config(void)
 
     while (1) {
         HOME();
-        BOLD_TEXT();
-        printf("=== CONFIGURATION ===\n");
-        NORMAL_TEXT();
+        ui_header("CONFIGURATION", "Q: Back");
+        ui_hline();
         printf("\n");
-        printf("1. Server URL\n");
-        printf("   %s\n", server_url);
-        printf("\nQ. Back\n");
-        printf("\nSelect option: ");
+        ui_indent(); printf("1.  Server URL\n");
+        printf("\n      %s\n\n", server_url);
+        ui_hline();
+        printf("  Q: Back   Select: ");
 
         choice = toupper(getchar());
         if (choice == 'Q') break;
 
         if (choice == '1') {
             HOME();
-            BOLD_TEXT();
-            printf("=== SERVER URL ===\n");
-            NORMAL_TEXT();
-            printf("\nCurrent: %s\n", server_url);
-            printf("\nNew URL (ESC to cancel):\n");
+            ui_header("SERVER URL", "Esc: Cancel");
+            ui_hline();
+            printf("\n  Current:\n    %s\n\n", server_url);
+            ui_hline();
+            printf("  New URL: ");
             s_val[0] = '\0';
             if (read_line(s_val, (int)sizeof(s_val)) && s_val[0] != '\0') {
                 strncpy(server_url, s_val, sizeof(server_url) - 1);
                 server_url[sizeof(server_url) - 1] = '\0';
-                printf("\nURL updated.\n");
-                printf("Press any key to continue...\n");
-                getchar();
+                printf("\n  URL updated.\n\n");
+                wait_key();
             }
         }
     }
