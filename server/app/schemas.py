@@ -3,6 +3,9 @@ from typing import Optional
 from datetime import datetime
 
 
+
+
+
 class BlogPostCreate(BaseModel):
     """Request model for creating a new blog post."""
     title: str = Field(..., min_length=1, max_length=200)
@@ -65,3 +68,19 @@ class RenderRequest(BaseModel):
 class RenderResponse(BaseModel):
     """Response model for rendered HTML."""
     html: str
+
+
+class CategoryCount(BaseModel):
+    """Category name with its post count."""
+    name: str
+    count: int
+
+
+class StatsResponse(BaseModel):
+    """Blog statistics response."""
+    total_posts: int
+    total_categories: int
+    avg_bytes: int                   # average post file size, rounded to nearest byte
+    year: int                        # calendar year the posts_per_month refers to
+    categories: list[CategoryCount]  # sorted by count desc, then name asc
+    posts_per_month: list[int]       # 12 entries: Jan–Dec counts for `year`

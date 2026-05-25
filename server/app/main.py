@@ -18,6 +18,7 @@ from .schemas import (
     BlogPostMarkdown,
     RenderRequest,
     RenderResponse,
+    StatsResponse,
 )
 from .storage import BlogStorage
 from .blog_renderer import BlogRenderer
@@ -311,6 +312,18 @@ async def delete_post_via_put(post_id: str) -> dict:
 
     _delete_dedup_cache[post_id] = now + _PUT_DEDUP_TTL
     return {"id": post_id}
+
+
+# ============================================================================
+# STATS ENDPOINT
+# ============================================================================
+
+
+@app.get("/api/stats", response_model=StatsResponse)
+def get_stats() -> StatsResponse:
+    """Return blog statistics: post count, category breakdown,
+    posts-per-month histogram for the current year, and average file size."""
+    return StatsResponse(**storage.get_stats())
 
 
 # ============================================================================

@@ -19,6 +19,15 @@ export interface CategoryInfo {
   count: number
 }
 
+export interface BlogStats {
+  total_posts: number
+  total_categories: number
+  avg_bytes: number          // average post file size in bytes
+  year: number               // calendar year for posts_per_month
+  categories: CategoryInfo[] // sorted by count desc
+  posts_per_month: number[]  // 12 entries, Jan–Dec
+}
+
 export interface CreatePostRequest {
   title: string
   markdown_body: string
@@ -99,5 +108,11 @@ export const blogAPI = {
   async renderMarkdown(markdown: string): Promise<string> {
     const { data } = await api.post('/render', { markdown_body: markdown })
     return data.html
+  },
+
+  // Blog statistics
+  async getStats(): Promise<BlogStats> {
+    const { data } = await api.get('/stats')
+    return data
   },
 }

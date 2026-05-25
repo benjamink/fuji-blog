@@ -1,0 +1,137 @@
+/* ── Page heading ────────────────────────────────────────────── */
+.stats-heading {
+  font-size: 28px;
+  font-weight: 800;
+  color: #111;
+  letter-spacing: -0.02em;
+  margin-bottom: 28px;
+}
+
+/* ── Summary cards ───────────────────────────────────────────── */
+.stats-cards {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 44px;
+  flex-wrap: wrap;
+}
+
+.stats-card {
+  flex: 1;
+  min-width: 130px;
+  background: #f9f9f9;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  padding: 20px 24px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.stats-card-value {
+  font-size: 34px;
+  font-weight: 700;
+  color: #007acc;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.stats-card-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* ── Section ─────────────────────────────────────────────────── */
+.stats-section {
+  margin-bottom: 44px;
+}
+
+.stats-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.stats-empty {
+  color: #bbb;
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+/* ── Bar rows ────────────────────────────────────────────────── */
+.stats-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stats-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 22px;
+}
+
+/* Label column — category names */
+.stats-bar-label {
+  font-size: 13px;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.stats-bar-label--cat {
+  width: 160px;
+  text-align: right;
+}
+
+/* Label column — month abbreviations */
+.stats-bar-label--month {
+  width: 36px;
+  text-align: right;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bar track (background) */
+.stats-bar-track {
+  flex: 1;
+  height: 14px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* Bar fill — categories */
+.stats-bar-fill {
+  height: 100%;
+  background: #007acc;
+  border-radius: 3px;
+  transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  min-width: 0;
+}
+
+/* Bar fill — months (green) */
+.stats-bar-fill--month {
+  background: #4caf50;
+}
+
+/* Count label */
+.stats-bar-count {
+  width: 32px;
+  font-size: 12px;
+  color: #999;
+  text-align: left;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}

@@ -15,11 +15,13 @@ export function BlogLayout({ children }: BlogLayoutProps) {
     blogAPI.listCategories(true).then(setCategories).catch(console.error)
   }, [])
 
-  // Derive the active category from the current path (e.g. "/tech" → "tech")
+  // Derive the active category from the current path (e.g. "/tech" → "tech").
+  // Reserved literal paths (/stats, /admin, /post/…) are not categories.
+  const reservedPaths = new Set(['/stats', '/admin'])
   const activeCat =
     location.pathname === '/'
       ? null
-      : location.pathname.startsWith('/post/')
+      : location.pathname.startsWith('/post/') || reservedPaths.has(location.pathname)
       ? null
       : decodeURIComponent(location.pathname.slice(1))
 
@@ -49,9 +51,15 @@ export function BlogLayout({ children }: BlogLayoutProps) {
             ))}
           </nav>
 
-          <a href="/admin" className="blog-admin-link">
-            Admin
-          </a>
+          <div className="blog-header-actions">
+            <Link
+              to="/stats"
+              className={`blog-cat-link${location.pathname === '/stats' ? ' active' : ''}`}
+            >
+              Stats
+            </Link>
+            <a href="/admin" className="blog-admin-link">Admin</a>
+          </div>
         </div>
       </header>
 

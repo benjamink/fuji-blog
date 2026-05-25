@@ -42,6 +42,7 @@ void new_post(void);
 void edit_post(void);
 void toggle_publish(void);
 void delete_post(void);
+void show_stats(void);
 void show_network_status(void);
 void get_screen_width(void);
 void show_config(void);
@@ -68,8 +69,12 @@ static int  s_pub[MAX_API_POSTS];
 static char s_path[16];
 static char s_val[MAX_API_TITLE_LEN + 1];
 static char s_body[MAX_API_MARKDOWN_BODY_LEN + 1];
-static char s_json_buf[2048];
+static char s_json_buf[1800]; /* 1800 is ample for real Apple II posts; was 2048 */
 static char s_id_result[MAX_API_ID_LEN + 1];
+
+/* Month abbreviations packed as a flat string — RODATA, not BSS.
+   Access month i with: %.3s applied to (s_months_str + i*3)            */
+static const char s_months_str[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
 int main(void)
 {
@@ -136,14 +141,15 @@ void main_menu(void)
     printf("3. Edit Post\n");
     printf("4. Toggle Publish\n");
     printf("5. Delete Post\n");
-    printf("6. Network Status\n");
-    printf("7. Configuration\n");
+    printf("6. Stats\n");
+    printf("7. Network Status\n");
+    printf("8. Configuration\n");
     printf("Q. Quit\n");
-    
+
     printf("\nSelect option: ");
     choice = getchar();
     choice = toupper(choice);
-    
+
     switch (choice) {
         case '1':
             list_posts();
@@ -161,9 +167,12 @@ void main_menu(void)
             delete_post();
             break;
         case '6':
-            show_network_status();
+            show_stats();
             break;
         case '7':
+            show_network_status();
+            break;
+        case '8':
             show_config();
             break;
         case 'Q':
@@ -1321,6 +1330,162 @@ void body_editor(void)
 #endif
         }
     }
+}
+
+void show_stats(void)
+{
+    /* BSS strategy — no new static arrays are declared here:
+       - s_ids[][]    reused for category names
+       - s_pub[]      reused for category counts
+       - s_id_result  reused as path scratch (65 bytes; longest path = 20 chars)
+       - s_body       first 12 shorts (24 bytes) reused for posts-per-month;
+                      safe because show_stats() never runs with body_editor()
+       - s_months_str file-scope const string (RODATA, not BSS)             */
+    int total_posts, total_cats, avg_bytes, year_val;
+    int cat_count, cat_max, ppm_max;
+    int i, j, bar_len, name_max, bar_area, nlen;
+    int *ppm;     /* points into s_body — no extra BSS */
+    uint8_t perr;
+    int16_t pn;
+
+    total_posts = total_cats = avg_bytes = year_val = 0;
+    cat_count = cat_max = ppm_max = 0;
+    ppm = (int *)s_body;   /* borrow first 12 ints (24 bytes) of s_body */
+
+    /* ---- Phase 1: fetch ---- */
+    HOME();
+    BOLD_TEXT(); printf("BLOG STATS\n"); NORMAL_TEXT();
+    printf("Loading...\n");
+
+    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/stats", server_url);
+    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+    if (perr) {
+        printf("Connection error: %d\n", (int)perr);
+        printf("Press any key...\n");
+        getchar();
+        return;
+    }
+    perr = network_json_parse(s_spec);
+    if (perr) {
+        printf("Parse error: %d\n", (int)perr);
+        network_close(s_spec);
+        printf("Press any key...\n");
+        getchar();
+        return;
+    }
+
+    /* Scalar fields — use s_val as query result scratch (as usual) */
+    s_val[0] = '\0';
+    network_json_query(s_spec, "/total_posts", s_val);
+    total_posts = atoi(s_val);
+
+    s_val[0] = '\0';
+    network_json_query(s_spec, "/total_categories", s_val);
+    total_cats = atoi(s_val);
+
+    s_val[0] = '\0';
+    network_json_query(s_spec, "/avg_bytes", s_val);
+    avg_bytes = atoi(s_val);
+
+    s_val[0] = '\0';
+    network_json_query(s_spec, "/year", s_val);
+    year_val = atoi(s_val);
+
+    /* Categories — s_id_result used as path buffer (65 bytes >= 20 needed) */
+    for (i = 0; i < MAX_API_POSTS; i++) {
+        snprintf(s_id_result, sizeof(s_id_result), "/categories/%d/name", i);
+        s_val[0] = '\0';
+        pn = network_json_query(s_spec, s_id_result, s_val);
+        if (pn <= 0 || !s_val[0]) break;
+        strncpy(s_ids[i], s_val, MAX_API_ID_LEN);
+        s_ids[i][MAX_API_ID_LEN] = '\0';
+
+        snprintf(s_id_result, sizeof(s_id_result), "/categories/%d/count", i);
+        s_val[0] = '\0';
+        network_json_query(s_spec, s_id_result, s_val);
+        s_pub[i] = atoi(s_val);
+        if (s_pub[i] > cat_max) cat_max = s_pub[i];
+        cat_count++;
+    }
+
+    /* Posts per month — stored in borrowed ppm[] window of s_body */
+    for (i = 0; i < 12; i++) {
+        snprintf(s_id_result, sizeof(s_id_result), "/posts_per_month/%d", i);
+        s_val[0] = '\0';
+        network_json_query(s_spec, s_id_result, s_val);
+        ppm[i] = atoi(s_val);
+        if (ppm[i] > ppm_max) ppm_max = ppm[i];
+    }
+
+    network_close(s_spec);
+
+    /* ---- Screen 1: Summary + Categories ---- */
+    HOME();
+    BOLD_TEXT(); printf("BLOG STATS\n"); NORMAL_TEXT();
+    printf("==========\n\n");
+    printf("Posts: %d  Categories: %d\n", total_posts, total_cats);
+    if (avg_bytes >= 1024)
+        printf("Avg size: %d KB\n", avg_bytes / 1024);
+    else
+        printf("Avg size: %d bytes\n", avg_bytes);
+
+    if (cat_count > 0) {
+        printf("\nCATEGORIES\n");
+        printf("----------\n");
+
+        name_max = (screen_width >= 80) ? 20 : 14;
+        /* bar area: screen width minus name col, '|', and " NNN\n" (5 chars) */
+        bar_area = screen_width - name_max - 6;
+        if (bar_area < 4) bar_area = 4;
+
+        for (i = 0; i < cat_count; i++) {
+            nlen = (int)strlen(s_ids[i]);
+            if (nlen > name_max) { s_ids[i][name_max] = '\0'; nlen = name_max; }
+            printf("%s", s_ids[i]);
+            for (j = nlen; j < name_max; j++) putchar(' ');
+            putchar('|');
+            bar_len = (cat_max > 0)
+                      ? (s_pub[i] * bar_area) / cat_max
+                      : 0;
+            for (j = 0; j < bar_len; j++) putchar('#');
+            printf(" %d\n", s_pub[i]);
+        }
+    }
+
+    printf("\nPress any key for chart...\n");
+    getchar();
+
+    /* ---- Screen 2: Monthly Histogram ---- */
+    HOME();
+    BOLD_TEXT();
+    if (year_val > 0)
+        printf("POSTS/MONTH (%d)\n", year_val);
+    else
+        printf("POSTS/MONTH\n");
+    NORMAL_TEXT();
+    printf("=================\n\n");
+
+    /* "Jan|" = 4 chars; leave 5 chars for " NNN\n" */
+    bar_area = screen_width - 9;
+    if (bar_area < 4) bar_area = 4;
+
+    for (i = 0; i < 12; i++) {
+        /* Print 3-char month abbreviation from packed string */
+        putchar(s_months_str[i * 3]);
+        putchar(s_months_str[i * 3 + 1]);
+        putchar(s_months_str[i * 3 + 2]);
+        putchar('|');
+        bar_len = (ppm_max > 0)
+                  ? (ppm[i] * bar_area) / ppm_max
+                  : 0;
+        for (j = 0; j < bar_len; j++) putchar('#');
+        if (ppm[i] > 0)
+            printf(" %d", ppm[i]);
+        putchar('\n');
+    }
+
+    printf("\nPress any key...\n");
+    getchar();
 }
 
 void show_config(void)

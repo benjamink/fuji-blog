@@ -299,6 +299,60 @@ class BlogStorage:
         os.remove(path)
         return True
 
+    def get_stats(self) -> dict:
+        """Compute blog statistics over all posts (published + draft).
+
+        Returns a dict matching StatsResponse:
+          total_posts, total_categories, avg_bytes, year,
+          categories ([{name, count}] sorted by count desc),
+          posts_per_month (12 ints, Jan–Dec of the current calendar year).
+        """
+        from datetime import date
+
+        posts = self.list_posts()
+        total_posts = len(posts)
+
+        # Category counts
+        cat_counts: dict = {}
+        for post in posts:
+            cat = post.category or UNCATEGORIZED
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        total_categories = len(cat_counts)
+        categories = sorted(
+            [{"name": k, "count": v} for k, v in cat_counts.items()],
+            key=lambda x: (-x["count"], x["name"]),
+        )
+
+        # Posts per month for the current calendar year
+        current_year = date.today().year
+        posts_per_month = [0] * 12
+        for post in posts:
+            if post.created_at.year == current_year:
+                posts_per_month[post.created_at.month - 1] += 1
+
+        # Average .md file size (bytes)
+        total_size = 0
+        file_count = 0
+        for dirpath, _, filenames in os.walk(self.posts_dir):
+            for fname in filenames:
+                if not fname.endswith(".md"):
+                    continue
+                try:
+                    total_size += os.path.getsize(os.path.join(dirpath, fname))
+                    file_count += 1
+                except OSError:
+                    continue
+        avg_bytes = int(round(total_size / file_count)) if file_count > 0 else 0
+
+        return {
+            "total_posts": total_posts,
+            "total_categories": total_categories,
+            "avg_bytes": avg_bytes,
+            "year": current_year,
+            "categories": categories,
+            "posts_per_month": posts_per_month,
+        }
+
     def get_post_by_slug(self, slug: str) -> Optional[BlogPost]:
         """Find a post by slug.
 
