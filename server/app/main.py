@@ -24,7 +24,7 @@ from .storage import BlogStorage
 from .blog_renderer import BlogRenderer
 
 app = FastAPI(
-    title="FujiNet Blog API",
+    title="FujiBlogger API",
     description="API for managing blog posts on Apple IIc via FujiNet",
     version="0.1.0",
 )

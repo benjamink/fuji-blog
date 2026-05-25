@@ -1,3 +1,7 @@
+# Official name: FujiBlogger
+# ProDOS filenames are limited to 15 characters (A-Z, 0-9, period only).
+# "FUJIBLOGGER.SYSTEM" = 18 chars — exceeds the limit.
+# The binary is therefore kept as "FUJIBLOG" → "FUJIBLOG.SYSTEM" (15 chars exactly).
 PRODUCT = fujiblog
 PLATFORMS += apple2
 

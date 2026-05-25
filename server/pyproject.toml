@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fuji-blog-server"
+name = "fujiblogger-server"
 version = "0.1.0"
-description = "FujiNet Apple IIc Markdown Blog Server"
+description = "FujiBlogger — Apple IIc Markdown Blog Server"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Author", email = "author@example.com"}]

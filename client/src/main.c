@@ -218,7 +218,7 @@ void show_splash(void)
     int i;
 
     HOME();
-    ui_header("FUJINET BLOG", "");
+    ui_header("FUJIBLOGGER", "");
     ui_hline();
     printf("\n  Initializing FujiNet...\n\n");
 

@@ -1,1 +1,1 @@
-# FujiNet Blog Server
+# FujiBlogger Server

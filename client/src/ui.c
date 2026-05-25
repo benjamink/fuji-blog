@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────────────────────
-   FujiBlog — screen-layout primitives  (ui.c)
+   FujiBlogger — screen-layout primitives  (ui.c)
    ────────────────────────────────────────────────────────────── */
 
 #include <stdio.h>
@@ -16,7 +16,7 @@ extern int screen_width;
 /* ── ui_header ──────────────────────────────────────────────── */
 /*
  * Draws one full-width row in inverse video:
- *   "FujiNet Blog"   <spaces>   TITLE (centered)   <spaces>   hint
+ *   "FujiBlogger"    <spaces>   TITLE (centered)   <spaces>   hint
  *
  * Columns are filled with spaces so the entire row is highlighted.
  */
@@ -37,8 +37,8 @@ void ui_header(const char *title, const char *hint)
 #endif
 
     /* Left: app name */
-    printf("FujiNet Blog");
-    col = 12;
+    printf("FujiBlogger");
+    col = 11;
 
     /* Pad to centre of title */
     for (i = col; i < center_start; i++) { putchar(' '); col++; }

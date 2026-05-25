@@ -112,7 +112,7 @@ function AdminApp() {
     <div className="app">
       <header className="app-header">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-          <h1 style={{ margin: 0 }}>FujiNet Blog — Admin</h1>
+          <h1 style={{ margin: 0 }}>FujiBlogger — Admin</h1>
           <a href="/" style={{ color: 'rgba(255,255,255,0.8)', fontSize: '14px', textDecoration: 'none' }}>
             ← View Blog
           </a>

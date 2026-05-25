@@ -1,11 +1,11 @@
-# FujiNet Apple IIc Markdown Blog
+# FujiBlogger
 
 A client/server application for writing and publishing blog posts from an Apple IIc with FujiNet hardware. The Apple IIc client allows authors to compose Markdown posts, manage categories, and toggle publish state. The Python FastAPI server persists posts, renders Markdown to HTML, and serves a React-based admin and public blog frontend.
 
 ## Project Structure
 
 ```
-fuji-blog/
+fujiblogger/   (repo: fuji-blog)
 ├── CLAUDE.md                # This file
 ├── README.md                # Project overview
 ├── client/                  # Apple IIc client (CC65 + MekkoGX)
@@ -78,9 +78,9 @@ fuji-blog/
    ```
 
 2. **Output**:
-   - Built executable: `client/build/apple2/r2r/fujiblog` (disk image)
+   - Built executable: `client/build/apple2/r2r/fujiblog.po` (disk image)
    - Transfer to Apple IIc via FujiNet or create a bootable disk
-   - **ProDOS filename limit:** ProDOS allows max 15 characters. The product name is `fujiblog` → ProDOS file `FUJIBLOG.SYSTEM` (15 chars). Do not rename it to anything that would exceed 15 chars or contain invalid ProDOS characters (only A–Z, 0–9, period allowed).
+   - **ProDOS filename limit:** ProDOS allows max 15 characters (A–Z, 0–9, period only). The official name is **FujiBlogger**, but `FUJIBLOGGER.SYSTEM` = 18 chars exceeds the limit. The binary is therefore kept as `FUJIBLOG.SYSTEM` (15 chars exactly). Do not change `PRODUCT` in the Makefile without verifying the resulting ProDOS filename length.
 
 3. **Configure FujiNet library** (if needed):
    - Set `FUJINET_LIB` in `client/Makefile` to a version number, local path, or git URL
@@ -333,7 +333,7 @@ curl -X PUT http://localhost:8000/api/posts \
 
 ### "Relocation/Configuration Error" on Apple IIc boot
 - ProDOS filenames are limited to 15 characters and only allow A–Z, 0–9, and period.
-- The product is named `fujiblog` → ProDOS file `FUJIBLOG.SYSTEM` (15 chars exactly). Do not change the product name without checking the resulting ProDOS filename length.
+- FujiBlogger's official name cannot fit in a ProDOS filename: `FUJIBLOGGER.SYSTEM` = 18 chars. The binary is therefore shipped as `FUJIBLOG.SYSTEM` (15 chars exactly). Do not change `PRODUCT` in the Makefile without verifying the resulting ProDOS filename length.
 
 ### Garbage characters on screen
 - ANSI escape codes must not be sent to the Apple IIc display. All terminal formatting in `main.c` must be inside `#else` (non-cc65) branches. Use `clrscr()` for `HOME()` and leave `BOLD_TEXT()`/`NORMAL_TEXT()` as no-ops under `#ifdef __CC65__`.

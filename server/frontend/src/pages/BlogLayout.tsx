@@ -30,7 +30,7 @@ export function BlogLayout({ children }: BlogLayoutProps) {
       <header className="blog-header">
         <div className="blog-header-inner">
           <Link to="/" className="blog-site-title">
-            FujiNet Blog
+            FujiBlogger
           </Link>
 
           <nav className="blog-cat-nav">

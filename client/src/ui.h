@@ -2,12 +2,12 @@
 #define UI_H
 
 /* ──────────────────────────────────────────────────────────────
-   FujiBlog — screen-layout primitives
+   FujiBlogger — screen-layout primitives
    All functions respect the global `screen_width` variable.
    ────────────────────────────────────────────────────────────── */
 
 /* Full-width inverse-video header bar.
-   Layout:  "FujiNet Blog"  |  centered title  |  right-justified hint
+   Layout:  "FujiBlogger"  |  centered title  |  right-justified hint
    On cc65 uses revers(1/0); on other platforms uses ANSI reverse video. */
 void ui_header(const char *title, const char *hint);
 

@@ -1,4 +1,4 @@
-# FujiNet Apple IIc Markdown Blog
+# FujiBlogger
 
 Write and publish blog posts from a real Apple IIc with [FujiNet](https://github.com/FujiNetWIFI/fujinet-lib) hardware. Compose Markdown on your retro machine, sync over Wi-Fi to a modern Python server, and serve beautifully rendered HTML to the web.
 
@@ -40,13 +40,13 @@ Apple IIc + FujiNet  ──────PUT/GET──────►  FastAPI Ser
 ## Repository Layout
 
 ```text
-fuji-blog/
+fujiblogger/   (repo: fuji-blog)
 ├── README.md               ← You are here
 ├── CLAUDE.md               ← Deep technical notes (FujiNet quirks, API spec)
 ├── .gitignore
 │
 ├── client/                 ← Apple IIc client (CC65 + MekkoGX)
-│   ├── Makefile            ← PRODUCT=fujiblog, FUJINET_LIB=4.10.0
+│   ├── Makefile            ← PRODUCT=fujiblog (ProDOS binary), FUJINET_LIB=4.10.0
 │   ├── mekkogx/            ← MekkoGX cross-platform build framework (submodule)
 │   └── src/
 │       ├── main.c          ← Main loop, menu system, all screen functions
@@ -125,7 +125,9 @@ make apple2
 
 Output disk image: `client/build/apple2/r2r/fujiblog.po`
 
-Executable name on disk: `FUJIBLOG` (ProDOS — max 15 chars: `FUJIBLOG.SYSTEM`)
+Executable name on disk: `FUJIBLOG.SYSTEM` (ProDOS — 15 chars, the filesystem maximum;
+`FUJIBLOGGER.SYSTEM` would be 18 chars and exceed the limit, so the binary keeps the
+shorter name while the program displays "FujiBlogger" in its UI.)
 
 Transfer to your Apple IIc via FujiNet's file browser or your preferred disk-transfer tool. Boot the disk and the client starts automatically.
 
@@ -343,7 +345,7 @@ curl http://localhost:8000/api/stats
 | "FujiNet NOT DETECTED" | Check FujiNet is powered on, seated correctly, and running firmware ≥ 4.10.0 |
 | `7. Network Status → T → G` fails | Verify server IP/port in `8. Configuration`; confirm the machine can reach the server |
 | `7. Network Status → T → P` fails | Check server logs for the incoming PUT; ensure write endpoints return `BlogPostSummary` |
-| "Relocation/Configuration Error" on boot | ProDOS filename must be ≤ 15 chars, A–Z/0–9/period only. `FUJIBLOG.SYSTEM` is exactly 15. |
+| "Relocation/Configuration Error" on boot | ProDOS filename must be ≤ 15 chars, A–Z/0–9/period only. The binary ships as `FUJIBLOG.SYSTEM` (15 chars). |
 | Garbage characters on screen | ANSI escape codes were added without `#ifdef __CC65__` guards — remove them |
 
 ---

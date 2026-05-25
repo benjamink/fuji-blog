@@ -1,6 +1,6 @@
-# FujiNet Blog — Server
+# FujiBlogger — Server
 
-FastAPI backend and React frontend for the FujiNet Apple IIc Markdown Blog.
+FastAPI backend and React frontend for FujiBlogger — the FujiNet Apple IIc Markdown Blog.
 
 The server handles all REST API requests from the Apple IIc client and web browsers, persists posts as plain Markdown files, renders Markdown to HTML, and serves the public blog and admin UI as a single React SPA.
 
@@ -124,7 +124,7 @@ uv run gunicorn app.main:app -k uvicorn.workers.UvicornWorker \
 Set `DATA_DIR` if you want posts stored outside the repo:
 
 ```bash
-export DATA_DIR=/var/data/fujiblog
+export DATA_DIR=/var/data/fujiblogger
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
