@@ -27,8 +27,9 @@ fuji-blog/
     │   ├── storage.py       # File-based post persistence
     │   └── blog_renderer.py # Markdown to HTML rendering
     ├── data/
-    │   ├── posts.json       # Persisted blog posts (auto-created)
-    │   └── .gitkeep         # Ensure data directory exists
+    │   ├── posts/                  # One .md file per post (auto-created)
+    │   │   └── {slug}.md           # YAML frontmatter + raw markdown body
+    │   └── .gitkeep                # Ensure data directory exists
     └── frontend/            # React + Vite admin/blog UI
         ├── package.json
         ├── vite.config.ts
@@ -77,8 +78,9 @@ fuji-blog/
    ```
 
 2. **Output**:
-   - Built executable: `client/build/apple2/r2r/fuji_blog` (or disk image depending on platform)
+   - Built executable: `client/build/apple2/r2r/fujiblog` (disk image)
    - Transfer to Apple IIc via FujiNet or create a bootable disk
+   - **ProDOS filename limit:** ProDOS allows max 15 characters. The product name is `fujiblog` → ProDOS file `FUJIBLOG.SYSTEM` (15 chars). Do not rename it to anything that would exceed 15 chars or contain invalid ProDOS characters (only A–Z, 0–9, period allowed).
 
 3. **Configure FujiNet library** (if needed):
    - Set `FUJINET_LIB` in `client/Makefile` to a version number, local path, or git URL
@@ -86,22 +88,61 @@ fuji-blog/
 
 ## API Specification
 
-### Blog Post Model
+### Post Storage Format
+
+Each post is stored as `server/data/posts/{slug}.md` — the filename is the URL slug derived from the title. The file has YAML frontmatter for metadata followed by the raw Markdown body:
+
+```markdown
+---
+id: 80f7e5e7-e73c-495e-9b92-620d049d4e3d
+title: My First Post
+slug: my-first-post
+categories:
+- tech
+- apple2
+published: false
+created_at: '2026-05-22T12:00:00.000000'
+updated_at: '2026-05-22T12:00:00.000000'
+---
+
+# My First Post
+
+Post content in Markdown here.
+```
+
+The files are plain text and can be edited directly in any text editor. The **frontmatter is authoritative** — `storage.py` reads metadata from it, not from the filename. `html_body` is always rendered on the fly from `markdown_body` and is never stored on disk.
+
+**Slug collisions** (e.g. two posts both titled "Test") are resolved by appending a counter: `test.md`, `test-2.md`, etc.
+
+**Title renames:** when a post's title is updated via the API, the `.md` file is renamed to match the new slug automatically.
+
+**Human editing workflow:** edit `data/posts/{slug}.md` directly, then restart the server (or let the live-reload pick it up). You can also create new posts by dropping a `.md` file into that directory — include all frontmatter fields (`id` must be a UUID) and the server will serve it immediately.
+
+**Migrations run automatically on startup:**
+- `posts.json` → individual `.md` files (first run after the JSON era)
+- UUID-named `.md` files → slug-named `.md` files (one-time rename after the initial `.md` migration)
+
+### API Blog Post Model
+
+The JSON shape returned by the API (fields sent/received over HTTP):
 
 ```json
 {
-  "id": "uuid or timestamp-based string",
+  "id": "80f7e5e7-e73c-495e-9b92-620d049d4e3d",
   "title": "Post Title",
   "slug": "post-title-auto-generated",
   "markdown_body": "# Heading\n\nContent...",
+  "html_body": "<h1>Heading</h1><p>Content...</p>",
   "categories": ["category1", "category2"],
   "published": false,
-  "created_at": "2026-05-19T12:00:00Z",
-  "updated_at": "2026-05-19T12:00:00Z"
+  "created_at": "2026-05-22T12:00:00",
+  "updated_at": "2026-05-22T12:00:00"
 }
 ```
 
-### Endpoints
+Write endpoints (`POST /api/posts`, `PUT /api/posts`, `PUT /api/posts/{id}`, `PATCH /api/posts/{id}/publish`) return the compact `BlogPostSummary` shape (no `markdown_body` or `html_body`) to keep response size within FujiNet's receive buffer.
+
+### API Endpoints
 
 #### List Posts
 - **GET** `/api/posts` — List all posts (admin view; includes unpublished)
@@ -113,10 +154,12 @@ fuji-blog/
 #### Create Post
 - **POST** `/api/posts`
   - Body: `{ "title", "markdown_body", "categories", "published" }`
-  - Returns: Created post with auto-generated ID and timestamps
+  - Returns: `BlogPostSummary` (compact — no `markdown_body` or `html_body`; kept small for FujiNet receive buffer)
+- **PUT** `/api/posts` *(FujiNet Apple IIc workaround — see Platform Notes below)*
+  - Same fields and response as POST; accepts raw JSON body without requiring `Content-Type: application/json`
 
 #### Update Post
-- **PUT** `/api/posts/{id}`
+- **PUT** `/api/posts/{post_id}`
   - Body: `{ "title", "markdown_body", "categories", "published" }`
   - Returns: Updated post
 
@@ -164,6 +207,53 @@ fuji-blog/
 3. Modify title, categories, or Markdown body
 4. Save changes (server updates)
 
+## Platform Notes — Apple IIc + FujiNet IWM Firmware
+
+These constraints are specific to the IWM (SmartPort) variant of FujiNet used on the Apple IIc. They do not apply to AtariNet, Commodore, or other FujiNet targets.
+
+### FujiNet HTTP channel mode bug
+
+`network_http_set_channel_mode()` always delivers **mode 0** (DATA mode) to the IWM firmware regardless of the value passed. Root cause: the firmware's `process_http()` reads `cmdFrame.aux2` to determine the channel mode, but `cmdFrame.aux2` is only set during `open()` (to the translation byte, which is 0) and is never updated when a channel-mode control command is received.
+
+**Consequence:** the following library calls are silently broken on Apple IIc:
+- `network_http_start_add_headers()` / `network_http_add_header()` / `network_http_end_add_headers()` — custom request headers cannot be set
+- `network_http_post()` — the POST body is never stored; the server receives an empty body
+- `network_http_put()` — same issue for PUT body
+
+**Workaround for sending a request body:** Open the connection with `OPEN_MODE_HTTP_PUT`. In DATA mode (mode 0), the firmware's `write_file_handle_data()` stores writes to `postData` when the HTTP method is PUT. Use `network_write()` to send the JSON body, then `network_json_parse()` to read the response. The server endpoint must accept raw JSON without a `Content-Type` header (see `PUT /api/posts`).
+
+```c
+/* Working pattern for Apple IIc — use PUT + network_write() */
+perr = network_open(spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
+network_write(spec, (uint8_t *)json_buf, (uint16_t)json_len);
+perr = network_json_parse(spec);
+pn   = network_json_query(spec, "/id", id_buf);
+network_close(spec);
+```
+
+### cc65 stack constraints
+
+The 6502 hardware stack is 256 bytes. Large local arrays in C functions will overflow it. **All large buffers in client functions must be declared `static`**, including strings used for URLs, JSON, post content, etc. cc65 will emit a "Too many local variables" error when it detects the overflow at compile time, but smaller overflows may crash silently at runtime.
+
+### Display and input
+
+- **ANSI escape sequences** must be guarded with `#ifdef __CC65__` / `#else` — cc65 targets use `clrscr()`, `cgetc()`, and conio functions; the ANSI codes appear as garbage on real hardware.
+- **80-column mode:** call `videomode(VIDEOMODE_80COL)` from `<apple2.h>` at startup.
+- **Input:** use `cgetc()` (not `getchar()`) for character input in cc65 builds to avoid echo and buffering issues. Handle backspace as both code 8 and 127.
+- **Screen clear:** use `clrscr()` (mapped to `HOME()`) not ANSI sequences.
+
+### Response size
+
+Keep server responses small. FujiNet's receive buffer is limited. Write endpoints return `BlogPostSummary` (no `markdown_body` or `html_body`) rather than the full `BlogPostResponse`. Read endpoints that return full posts are fine for GET requests where the client reads incrementally, but avoid large JSON in POST/PUT responses.
+
+### Diagnostics
+
+The client's **Network Status → T (Test Server)** menu provides:
+- **G:** GET `/api/ping` — confirms basic TCP connectivity
+- **P:** PUT `/api/posts` with a minimal test payload — confirms the full write path end-to-end
+
+Always test G before P to isolate network vs. write-path failures. Check the FujiNet serial console log for `special_set_channel_mode()` and `http_transaction()` lines when debugging.
+
 ## Development
 
 ### Add New Server Features
@@ -184,7 +274,7 @@ fuji-blog/
 ### Environment Variables
 
 - **Server**:
-  - `DATA_DIR`: Path to store `posts.json` (default: `server/data`)
+  - `DATA_DIR`: Path to store `posts/*.md` files (default: `server/data`)
   - `HOST`: Server host (default: `0.0.0.0`)
   - `PORT`: Server port (default: `8000`)
 
@@ -201,15 +291,22 @@ uv run uvicorn app.main:app --reload
 
 # In another terminal, test endpoints
 curl http://localhost:8000/api/posts
+
+# Standard POST (from web / React frontend)
 curl -X POST http://localhost:8000/api/posts \
   -H "Content-Type: application/json" \
+  -d '{"title":"Test","markdown_body":"# Test","categories":[],"published":false}'
+
+# FujiNet-compatible PUT create (no Content-Type header required)
+curl -X PUT http://localhost:8000/api/posts \
   -d '{"title":"Test","markdown_body":"# Test","categories":[],"published":false}'
 ```
 
 ### Client
 - Build with `make apple2` and run on Apple IIc or an emulator (e.g., Virtual II, AppleWin)
 - Verify FujiNet detection and network availability
-- Test post list fetch and create/edit workflows
+- Use **Network Status → T → G** to confirm connectivity before testing write operations
+- Use **Network Status → T → P** to confirm the full PUT create path works end-to-end
 
 ## Troubleshooting
 
@@ -226,8 +323,20 @@ curl -X POST http://localhost:8000/api/posts \
 ### FujiNet client can't connect
 - Verify FujiNet device is online and reachable
 - Check server is running and firewall allows traffic
-- Confirm server URL is correct in client code
-- Enable debug output in `client/src/network.c` (if available)
+- Confirm server URL is correct in client Configuration menu
+- Use the built-in **Network Status → T → G** diagnostic to test GET before anything else
+
+### POST/write operations fail with "Network error" or "Server error"
+- Check the FujiNet serial console. If you see `special_set_channel_mode(0)` for every mode change and `http_transaction() done, resultCode=-1, fileSize=0`, the IWM firmware channel-mode bug is active (see Platform Notes above). The client already works around this using `OPEN_MODE_HTTP_PUT` + `network_write()`.
+- If you see nothing in the **server** logs when a write is attempted, the TCP connection is not reaching the server — check the URL, port, and firewall.
+- Response size matters: if `network_json_parse()` returns an error but the server logs show a 200/201, the response JSON may be too large for FujiNet's buffer. Ensure write endpoints return `BlogPostSummary` not `BlogPostResponse`.
+
+### "Relocation/Configuration Error" on Apple IIc boot
+- ProDOS filenames are limited to 15 characters and only allow A–Z, 0–9, and period.
+- The product is named `fujiblog` → ProDOS file `FUJIBLOG.SYSTEM` (15 chars exactly). Do not change the product name without checking the resulting ProDOS filename length.
+
+### Garbage characters on screen
+- ANSI escape codes must not be sent to the Apple IIc display. All terminal formatting in `main.c` must be inside `#else` (non-cc65) branches. Use `clrscr()` for `HOME()` and leave `BOLD_TEXT()`/`NORMAL_TEXT()` as no-ops under `#ifdef __CC65__`.
 
 ## References
 

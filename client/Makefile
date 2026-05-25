@@ -1,4 +1,4 @@
-PRODUCT = fuji_blog
+PRODUCT = fujiblog
 PLATFORMS += apple2
 
 # You can run 'make <platform>' to build for a specific platform,

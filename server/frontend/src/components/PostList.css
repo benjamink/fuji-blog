@@ -85,6 +85,17 @@
   font-size: 12px;
 }
 
+.category-badge.clickable {
+  cursor: pointer;
+  background-color: #d0e8f5;
+  color: #005a9e;
+  transition: background-color 0.15s;
+}
+
+.category-badge.clickable:hover {
+  background-color: #b3d6ef;
+}
+
 .post-preview {
   margin-bottom: 16px;
   color: #555;

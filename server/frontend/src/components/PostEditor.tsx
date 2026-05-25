@@ -1,12 +1,12 @@
-import React, { useState } from 'react'
+import React from 'react'
 import './PostEditor.css'
 
 interface PostEditorProps {
   title: string
-  categories: string[]
+  category: string
   content: string
   onTitleChange: (title: string) => void
-  onCategoriesChange: (categories: string[]) => void
+  onCategoryChange: (category: string) => void
   onContentChange: (content: string) => void
   onSave: () => void
   onCancel: () => void
@@ -15,10 +15,10 @@ interface PostEditorProps {
 
 export const PostEditor: React.FC<PostEditorProps> = ({
   title,
-  categories,
+  category,
   content,
   onTitleChange,
-  onCategoriesChange,
+  onCategoryChange,
   onContentChange,
   onSave,
   onCancel,
@@ -39,13 +39,9 @@ export const PostEditor: React.FC<PostEditorProps> = ({
       <div className="editor-fields">
         <input
           type="text"
-          placeholder="Categories (comma-separated)"
-          value={categories.join(', ')}
-          onChange={(e) =>
-            onCategoriesChange(
-              e.target.value.split(',').map((c) => c.trim()).filter((c) => c)
-            )
-          }
+          placeholder="Category (e.g. tech, apple2)"
+          value={category}
+          onChange={(e) => onCategoryChange(e.target.value)}
           className="categories-input"
         />
       </div>

@@ -8,23 +8,28 @@ export interface BlogPost {
   slug: string
   markdown_body: string
   html_body?: string
-  categories: string[]
+  category: string
   published: boolean
   created_at: string
   updated_at: string
 }
 
+export interface CategoryInfo {
+  name: string
+  count: number
+}
+
 export interface CreatePostRequest {
   title: string
   markdown_body: string
-  categories: string[]
+  category: string
   published?: boolean
 }
 
 export interface UpdatePostRequest {
   title?: string
   markdown_body?: string
-  categories?: string[]
+  category?: string
   published?: boolean
 }
 
@@ -34,20 +39,36 @@ const api = axios.create({
 
 export const blogAPI = {
   // List all posts (admin view)
-  async listPosts(): Promise<BlogPost[]> {
-    const { data } = await api.get('/posts')
+  async listPosts(category?: string): Promise<BlogPost[]> {
+    const { data } = await api.get('/posts', { params: category ? { category } : {} })
     return data
   },
 
   // List published posts only
-  async listPublishedPosts(): Promise<BlogPost[]> {
-    const { data } = await api.get('/posts/published')
+  async listPublishedPosts(category?: string): Promise<BlogPost[]> {
+    const { data } = await api.get('/posts/published', {
+      params: category ? { category } : {},
+    })
     return data
   },
 
-  // Get a single post
+  // List all categories
+  async listCategories(publishedOnly = false): Promise<CategoryInfo[]> {
+    const { data } = await api.get('/categories', {
+      params: publishedOnly ? { published_only: true } : {},
+    })
+    return data
+  },
+
+  // Get a single post by ID
   async getPost(id: string): Promise<BlogPost> {
     const { data } = await api.get(`/posts/${id}`)
+    return data
+  },
+
+  // Get a published post by URL slug (used by the public blog)
+  async getPostBySlug(slug: string): Promise<BlogPost> {
+    const { data } = await api.get(`/posts/slug/${slug}`)
     return data
   },
 

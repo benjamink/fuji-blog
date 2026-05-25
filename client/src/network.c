@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "network.h"
 
 #define MAX_URL_LEN 512
 #define MAX_RESPONSE_LEN 8192
@@ -17,7 +18,7 @@ typedef struct {
 
 static NetworkState net_state = {0};
 
-int network_init(void)
+int client_network_init(void)
 {
     /* Initialize network device - returns 0 on success */
     uint8_t err = network_init();
@@ -65,47 +66,56 @@ int network_get(const char *server_url, const char *path, unsigned char *respons
 
 int network_post(const char *server_url, const char *path, const char *body, unsigned char *response, int response_len)
 {
-    /* Perform HTTP POST request with JSON body
-       Returns number of bytes read, or -1 on error */
     uint8_t err;
     int16_t bytes_read;
-    
+    uint16_t bw;
+    uint8_t conn;
+    uint8_t nerr;
+    uint8_t retries;
+
     build_devicespec(net_state.devicespec, server_url, path);
-    
-    /* Open with POST mode */
-    err = network_open(net_state.devicespec, OPEN_MODE_HTTP_POST, OPEN_TRANS_NONE);
+
+    /* Open in read mode — network_http_post() registers the body and method,
+       network_read() then triggers the actual HTTP transaction, same as GET. */
+    err = network_open(net_state.devicespec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
     if (err != 0) {
         net_state.last_error = err;
         return -1;
     }
-    
-    /* Add Content-Type header */
-    err = network_http_start_add_headers(net_state.devicespec);
-    if (err == 0) {
-        network_http_add_header(net_state.devicespec, "Content-Type: application/json");
-        network_http_end_add_headers(net_state.devicespec);
-    }
-    
-    /* Send POST body */
+
     err = network_http_post(net_state.devicespec, body);
     if (err != 0) {
         net_state.last_error = err;
         network_close(net_state.devicespec);
         return -1;
     }
-    
-    /* Read response */
-    bytes_read = network_read(net_state.devicespec, response, response_len);
+
+    /* Poll until bytes are available from the server. */
+    bw = 0; conn = 1; nerr = 0; retries = 50;
+    do {
+        network_status(net_state.devicespec, &bw, &conn, &nerr);
+        retries--;
+    } while (bw == 0 && conn != 0 && retries > 0);
+    net_state.last_error = nerr;
+
+    if (bw == 0) {
+        network_close(net_state.devicespec);
+        return -1;
+    }
+
+    if (bw > (uint16_t)response_len)
+        bw = (uint16_t)response_len;
+
+    bytes_read = network_read(net_state.devicespec, response, bw);
     network_close(net_state.devicespec);
-    
+
     if (bytes_read < 0) {
         net_state.last_error = fn_device_error;
         net_state.last_read_size = 0;
         return -1;
     }
-    
+
     net_state.last_read_size = bytes_read;
-    net_state.last_error = 0;
     return (int)bytes_read;
 }
 

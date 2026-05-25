@@ -1,67 +1,104 @@
-/* Text editor for composing blog posts */
+/* Line-oriented body editor — operates on a flat NUL-terminated string
+   where lines are separated by '\n'. No static storage; all state is in
+   the caller's buffer (s_body in main.c). */
 
-#include <stdio.h>
 #include <string.h>
-#include <ctype.h>
 
-#define EDITOR_MAX_LINES 100
-#define EDITOR_MAX_LINE_LEN 80
-
-typedef struct {
-    char lines[EDITOR_MAX_LINES][EDITOR_MAX_LINE_LEN];
-    int line_count;
-    int cursor_line;
-    int cursor_col;
-} TextEditor;
-
-void editor_init(TextEditor *editor)
+/* Return pointer to the start of line n (0-based). If n >= line count,
+   returns pointer to the NUL terminator. */
+static char *line_start(char *body, int n)
 {
-    editor->line_count = 0;
-    editor->cursor_line = 0;
-    editor->cursor_col = 0;
-    memset(editor->lines, 0, sizeof(editor->lines));
+    int cur = 0;
+    while (*body && cur < n) {
+        if (*body++ == '\n') cur++;
+    }
+    return body;
 }
 
-void editor_display(TextEditor *editor, int screen_width)
+/* Count displayable lines (trailing newline is NOT an extra blank line). */
+int editor_count_lines(const char *body)
 {
-    /* Display editor content with wrapping for screen_width */
-    for (int i = 0; i < editor->line_count; i++) {
-        printf("%d: %s\n", i + 1, editor->lines[i]);
+    const char *last;
+    int n;
+    if (!body || !*body) return 0;
+    n = 1;
+    last = body;
+    while (*body) {
+        if (*body++ == '\n') { n++; last = body; }
     }
+    if (!*last) n--;   /* trailing newline: "foo\n" = 1 line, not 2 */
+    return n;
 }
 
-void editor_add_line(TextEditor *editor, const char *line)
+/* Copy line n into buf (without the newline). Returns chars copied or -1. */
+int editor_get_line(const char *body, int n, char *buf, int buf_len)
 {
-    /* Add a line to the editor */
-    if (editor->line_count < EDITOR_MAX_LINES) {
-        strncpy(editor->lines[editor->line_count], line, EDITOR_MAX_LINE_LEN - 1);
-        editor->line_count++;
+    int cur = 0;
+    int len = 0;
+    if (!body || !buf || buf_len <= 0) return -1;
+    while (*body && cur < n) {
+        if (*body++ == '\n') cur++;
     }
+    if (cur < n && !*body) { buf[0] = '\0'; return -1; }
+    while (*body && *body != '\n' && len < buf_len - 1)
+        buf[len++] = *body++;
+    buf[len] = '\0';
+    return len;
 }
 
-void editor_delete_line(TextEditor *editor, int line_num)
+/* Replace line n with new_text. Returns new body length or -1 on overflow. */
+int editor_replace_line(char *body, int body_max, int n, const char *new_text)
 {
-    /* Delete a line from the editor */
-    if (line_num >= 0 && line_num < editor->line_count) {
-        for (int i = line_num; i < editor->line_count - 1; i++) {
-            strcpy(editor->lines[i], editor->lines[i + 1]);
-        }
-        editor->line_count--;
-    }
+    char *start, *eol;
+    int new_len, tail_len, total;
+
+    start = line_start(body, n);
+    eol = start;
+    while (*eol && *eol != '\n') eol++;
+
+    new_len  = (int)strlen(new_text);
+    tail_len = (int)strlen(eol);          /* includes '\n' if present */
+    total    = (int)(start - body) + new_len + tail_len + 1;
+
+    if (total > body_max) return -1;
+
+    memmove(start + new_len, eol, tail_len + 1);
+    memcpy(start, new_text, new_len);
+    return (int)strlen(body);
 }
 
-int editor_get_content(TextEditor *editor, char *output, int output_len)
+/* Delete line n (including its newline). Returns new body length or -1. */
+int editor_delete_line(char *body, int n)
 {
-    /* Concatenate all lines into a single string */
-    int offset = 0;
-    for (int i = 0; i < editor->line_count && offset < output_len; i++) {
-        int line_len = strlen(editor->lines[i]);
-        if (offset + line_len + 1 < output_len) {
-            strcpy(output + offset, editor->lines[i]);
-            offset += line_len;
-            output[offset++] = '\n';
-        }
-    }
-    output[offset] = '\0';
-    return offset;
+    char *start, *eol;
+
+    start = line_start(body, n);
+    if (!*start) return -1;
+
+    eol = start;
+    while (*eol && *eol != '\n') eol++;
+    if (*eol == '\n') eol++;
+
+    memmove(start, eol, strlen(eol) + 1);
+    return (int)strlen(body);
+}
+
+/* Insert text as a new line BEFORE line n (pass n == count to append).
+   Returns new body length or -1 on overflow. */
+int editor_insert_line(char *body, int body_max, int n, const char *text)
+{
+    char *pos;
+    int new_len, rest_len, total;
+
+    pos = line_start(body, n);
+    new_len  = (int)strlen(text);
+    rest_len = (int)strlen(pos);
+    total    = (int)(pos - body) + new_len + 1 + rest_len + 1;
+
+    if (total > body_max) return -1;
+
+    memmove(pos + new_len + 1, pos, rest_len + 1);
+    memcpy(pos, text, new_len);
+    pos[new_len] = '\n';
+    return (int)strlen(body);
 }

@@ -1,6 +1,6 @@
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import List
+from typing import Optional
 import uuid
 import re
 
@@ -12,7 +12,7 @@ class BlogPost:
     title: str
     slug: str
     markdown_body: str
-    categories: List[str]
+    category: str
     published: bool
     created_at: datetime
     updated_at: datetime
@@ -23,19 +23,16 @@ class BlogPost:
         cls,
         title: str,
         markdown_body: str,
-        categories: List[str],
+        category: str,
         published: bool = False,
     ) -> "BlogPost":
-        """Create a new BlogPost with auto-generated id, slug, and timestamps."""
         now = datetime.utcnow()
-        post_id = str(uuid.uuid4())
-        slug = cls.generate_slug(title)
         return cls(
-            id=post_id,
+            id=str(uuid.uuid4()),
             title=title,
-            slug=slug,
+            slug=cls.generate_slug(title),
             markdown_body=markdown_body,
-            categories=categories or [],
+            category=category or "",
             published=published,
             created_at=now,
             updated_at=now,
@@ -43,31 +40,28 @@ class BlogPost:
 
     @staticmethod
     def generate_slug(title: str) -> str:
-        """Generate a URL-safe slug from a title."""
         slug = title.lower().strip()
         slug = re.sub(r"[^\w\s-]", "", slug)
         slug = re.sub(r"[-\s]+", "-", slug)
         return slug.strip("-")
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
     def update(
         self,
-        title: str = None,
-        markdown_body: str = None,
-        categories: List[str] = None,
-        published: bool = None,
+        title: Optional[str] = None,
+        markdown_body: Optional[str] = None,
+        category: Optional[str] = None,
+        published: Optional[bool] = None,
     ) -> None:
-        """Update post fields and set updated_at timestamp."""
         if title is not None:
             self.title = title
             self.slug = self.generate_slug(title)
         if markdown_body is not None:
             self.markdown_body = markdown_body
-        if categories is not None:
-            self.categories = categories
+        if category is not None:
+            self.category = category
         if published is not None:
             self.published = published
         self.updated_at = datetime.utcnow()

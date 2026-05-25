@@ -1,0 +1,61 @@
+import React, { useEffect, useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
+import { blogAPI, CategoryInfo } from '../api'
+import './blog.css'
+
+interface BlogLayoutProps {
+  children: React.ReactNode
+}
+
+export function BlogLayout({ children }: BlogLayoutProps) {
+  const [categories, setCategories] = useState<CategoryInfo[]>([])
+  const location = useLocation()
+
+  useEffect(() => {
+    blogAPI.listCategories(true).then(setCategories).catch(console.error)
+  }, [])
+
+  // Derive the active category from the current path (e.g. "/tech" → "tech")
+  const activeCat =
+    location.pathname === '/'
+      ? null
+      : location.pathname.startsWith('/post/')
+      ? null
+      : decodeURIComponent(location.pathname.slice(1))
+
+  return (
+    <div className="blog-layout">
+      <header className="blog-header">
+        <div className="blog-header-inner">
+          <Link to="/" className="blog-site-title">
+            FujiNet Blog
+          </Link>
+
+          <nav className="blog-cat-nav">
+            <Link
+              to="/"
+              className={`blog-cat-link${activeCat === null && location.pathname === '/' ? ' active' : ''}`}
+            >
+              All Posts
+            </Link>
+            {categories.map((cat) => (
+              <Link
+                key={cat.name}
+                to={`/${encodeURIComponent(cat.name)}`}
+                className={`blog-cat-link${activeCat === cat.name ? ' active' : ''}`}
+              >
+                {cat.name}
+              </Link>
+            ))}
+          </nav>
+
+          <a href="/admin" className="blog-admin-link">
+            Admin
+          </a>
+        </div>
+      </header>
+
+      <main className="blog-main">{children}</main>
+    </div>
+  )
+}

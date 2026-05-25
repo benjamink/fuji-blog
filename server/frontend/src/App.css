@@ -89,3 +89,53 @@ body {
   color: #666;
   font-size: 16px;
 }
+
+/* ── Published view: sidebar + posts ───────────────────────── */
+.published-layout {
+  display: flex;
+  gap: 30px;
+  align-items: flex-start;
+  max-width: 1160px;
+  margin: 0 auto;
+}
+
+.published-posts {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Admin filter bar ───────────────────────────────────────── */
+.admin-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 900px;
+  margin: 0 auto 10px;
+  padding: 10px 0;
+  font-size: 14px;
+  color: #555;
+}
+
+.admin-cat-select {
+  padding: 6px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+  background: white;
+  cursor: pointer;
+}
+
+.clear-filter-btn {
+  padding: 5px 10px;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #555;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.clear-filter-btn:hover {
+  background-color: #f0f0f0;
+}

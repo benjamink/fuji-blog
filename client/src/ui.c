@@ -31,8 +31,9 @@ void center_text(const char *text, int width)
     /* Print text centered within width columns */
     int text_len = strlen(text);
     int left_pad = (width - text_len) / 2;
+    int i;
     
-    for (int i = 0; i < left_pad; i++) {
+    for (i = 0; i < left_pad; i++) {
         printf(" ");
     }
     printf("%s\n", text);
@@ -41,7 +42,8 @@ void center_text(const char *text, int width)
 void draw_line(int width, char ch)
 {
     /* Draw a horizontal line */
-    for (int i = 0; i < width; i++) {
+    int i;
+    for (i = 0; i < width; i++) {
         printf("%c", ch);
     }
     printf("\n");
