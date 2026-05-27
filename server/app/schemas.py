@@ -3,6 +3,16 @@ from typing import Optional
 from datetime import datetime
 
 
+class LoginRequest(BaseModel):
+    """Request body for admin login."""
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    """JWT token returned after successful login."""
+    access_token: str
+    token_type: str = "bearer"
 
 
 
@@ -80,7 +90,11 @@ class StatsResponse(BaseModel):
     """Blog statistics response."""
     total_posts: int
     total_categories: int
-    avg_bytes: int                   # average post file size, rounded to nearest byte
-    year: int                        # calendar year the posts_per_month refers to
-    categories: list[CategoryCount]  # sorted by count desc, then name asc
-    posts_per_month: list[int]       # 12 entries: Jan–Dec counts for `year`
+    # average post file size, rounded to nearest byte
+    avg_bytes: int
+    # calendar year the posts_per_month refers to
+    year: int
+    # sorted by count desc, then name asc
+    categories: list[CategoryCount]
+    # 12 entries: Jan–Dec counts for `year`
+    posts_per_month: list[int]

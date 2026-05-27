@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { clearToken, getToken } from './auth'
 
 const API_BASE = '/api'
 
@@ -45,6 +46,27 @@ export interface UpdatePostRequest {
 const api = axios.create({
   baseURL: API_BASE,
 })
+
+// Inject Bearer token on every request when one is stored.
+api.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// On 401, clear the stored token and redirect to the login page.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      clearToken()
+      window.location.href = '/admin/login'
+    }
+    return Promise.reject(error)
+  },
+)
 
 export const blogAPI = {
   // List all posts (admin view)

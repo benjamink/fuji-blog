@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { blogAPI, BlogPost } from './api'
 import { PostList } from './components/PostList'
 import { PostEditor } from './components/PostEditor'
+import { logout } from './auth'
 import './App.css'
 
 type ViewMode = 'list' | 'edit' | 'new'
@@ -113,9 +114,25 @@ function AdminApp() {
       <header className="app-header">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
           <h1 style={{ margin: 0 }}>FujiBlogger — Admin</h1>
-          <a href="/" style={{ color: 'rgba(255,255,255,0.8)', fontSize: '14px', textDecoration: 'none' }}>
-            ← View Blog
-          </a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <a href="/" style={{ color: 'rgba(255,255,255,0.8)', fontSize: '14px', textDecoration: 'none' }}>
+              ← View Blog
+            </a>
+            <button
+              onClick={logout}
+              style={{
+                background: 'rgba(255,255,255,0.15)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: 'rgba(255,255,255,0.9)',
+                borderRadius: '6px',
+                padding: '4px 12px',
+                fontSize: '13px',
+                cursor: 'pointer',
+              }}
+            >
+              Log out
+            </button>
+          </div>
         </div>
         <nav className="app-nav">
           <button

@@ -15,6 +15,9 @@
 #define MAX_RESPONSE_LEN 4096
 #define MAX_POSTS 50
 
+/* Screen layout constants */
+#define VP_HDR 4   /* rows above view-post viewport (hdr+hline+title+hline) */
+
 #ifdef __CC65__
 #include <conio.h>
 #include <apple2.h>
@@ -53,9 +56,11 @@ int screen_width = 40;  /* Detect 40 or 80 column mode */
 char server_url[256] = "http://192.168.15.35:8001";
 
 /* Shared BSS buffers — menu functions never run concurrently so one copy each
-   covers all callers. Keeps the apple2 BSS segment within its size limit.
-   s_titles is limited to MAX_API_TITLE_LEN+1 = 65 bytes per entry (64 chars).
-   s_json_buf is 1400 bytes: covers title(64)+cat(64)+body(1024)+overhead(~100). */
+   covers all callers. Sizes chosen to keep the apple2 BSS segment within its
+   ~7 KB limit.
+   s_json_buf: 2400 bytes handles real-world Markdown with up to ~65% newline
+   density in a 1280-char body (each '\n' → 2-char escape).  The encoder in
+   api.c truncates gracefully if the limit is ever reached. */
 static char s_spec[300];
 static char s_ids[MAX_API_POSTS][MAX_API_ID_LEN + 1];
 static char s_titles[MAX_API_POSTS][MAX_API_TITLE_LEN + 1];
@@ -63,12 +68,18 @@ static int  s_pub[MAX_API_POSTS];
 static char s_path[16];
 static char s_val[MAX_API_TITLE_LEN + 1];
 static char s_body[MAX_API_MARKDOWN_BODY_LEN + 1];
-static char s_json_buf[1400];
+static char s_json_buf[2048];
 static char s_id_result[MAX_API_ID_LEN + 1];
 
 /* Month abbreviations packed as a flat string — RODATA, not BSS.
    Access month i with: %.3s applied to (s_months_str + i*3)            */
 static const char s_months_str[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+/* Static forward declarations — helpers defined near body_editor but
+   also called from view_post which appears earlier in this file.      */
+static void wp_get_pos(int target, int len, int cols, int *row, int *col);
+static int  wp_offset_at(int tr, int tc, int len, int cols);
+static void vp_draw(int top_line, int er, int len, int cols);
 
 /* ── Internal helpers ──────────────────────────────────────── */
 
@@ -96,6 +107,61 @@ static void wait_key(void)
     ui_hline();
     printf("  Press any key...\n");
     getchar();
+}
+
+/* Fetch the raw Markdown body for post `id` into s_body via the plain-text
+   /api/posts/{id}/body endpoint.
+
+   network_json_query() is limited to 512 bytes per field by the IWM firmware.
+   network_read() has no such per-field limit but is bounded by one SmartPort
+   block (~512 bytes) per call.  We therefore poll with network_status() and
+   loop until the firmware reports no more bytes available.
+
+   Returns the number of bytes stored in s_body (0 on error). */
+static int fetch_body(const char *id)
+{
+    int16_t n;
+    uint8_t perr;
+    uint16_t bw;
+    uint8_t conn, nerr;
+    int retries, offset, to_read;
+
+    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/body",
+             server_url, id);
+    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+    if (perr) {
+        screen_error("Body fetch error", (int)perr);
+        s_body[0] = '\0';
+        return 0;
+    }
+
+    /* Wait for the HTTP response to start arriving. */
+    bw = 0; conn = 1; nerr = 0;
+    retries = 100;
+    while (bw == 0 && conn != 0 && retries > 0) {
+        network_status(s_spec, &bw, &conn, &nerr);
+        retries--;
+    }
+
+    /* Read in 512-byte SmartPort chunks until the buffer is full or
+       the firmware reports no more bytes available. */
+    offset = 0;
+    while (bw > 0 && offset < MAX_API_MARKDOWN_BODY_LEN) {
+        to_read = (int)bw;
+        if (to_read > MAX_API_MARKDOWN_BODY_LEN - offset)
+            to_read = MAX_API_MARKDOWN_BODY_LEN - offset;
+        n = network_read(s_spec, (uint8_t *)s_body + offset,
+                         (uint16_t)to_read);
+        if (n <= 0) break;
+        offset += (int)n;
+        /* Check whether more bytes arrived while we were processing. */
+        bw = 0; conn = 1; nerr = 0;
+        network_status(s_spec, &bw, &conn, &nerr);
+    }
+
+    network_close(s_spec);
+    s_body[offset] = '\0';
+    return offset;
 }
 
 /* Fetch /api/posts/summaries (with optional suffix, e.g. "?published_only=true")
@@ -413,20 +479,32 @@ void list_posts(void)
 }
 
 /* ── view_post ─────────────────────────────────────────────── */
+/* Fixed-frame layout (24-row screen):
+     Row  0 : header bar       (ui_header)
+     Row  1 : hline            (ui_hline)
+     Row  2 : post title
+     Row  3 : hline
+     Rows 4-22 : scrollable content viewport  (VP_HDR=4, er=19)
+     Row 23 : status bar (inverse-video)
+   On non-CC65 platforms (dev/test) a simpler character-count pager
+   is used since gotoxy() is not available.                         */
 
 void view_post(const char *id)
 {
-    const char *p;
-    int page_size;
-    int chars;
-    int ch;
+    int len, total_lines, er, cols;
+    int top_line, ch, tl, tc, i;
     uint8_t perr;
 
+    er   = 19;   /* content rows: 24 total - 4 header - 1 status */
+    cols = screen_width;
+
+    /* Loading screen */
     HOME();
     ui_header("VIEW POST", "");
     ui_hline();
     printf("\n  Loading...\n");
 
+    /* Fetch title via JSON (short field — json_query is safe here). */
     snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/markdown",
              server_url, id);
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
@@ -435,48 +513,96 @@ void view_post(const char *id)
         return;
     }
     perr = network_json_parse(s_spec);
-    s_val[0]  = '\0';
-    s_body[0] = '\0';
+    s_val[0] = '\0';
     network_json_query(s_spec, "/title", s_val);
-    network_json_query(s_spec, "/markdown_body", s_body);
     network_close(s_spec);
 
-    /* Characters per page: leave 4 rows for header + title + footer. */
-    page_size = (screen_width >= 80) ? 80 * 17 : 40 * 16;
+    /* Fetch body via plain text to bypass the IWM firmware's 512-byte
+       network_json_query result limit. */
+    len = fetch_body(id);
 
-    p = s_body;
-    do {
-        HOME();
-        ui_header("VIEW POST", *p ? "Spc: More  Q: Back" : "Any: Back");
-        ui_hline();
-        printf("\n  %s\n", s_val);   /* actual post title */
-        ui_hline();
+    /* Count total visual lines (with word-wrap) for scroll limiting. */
+    wp_get_pos(len, len, cols, &tl, &tc);
+    total_lines = tl + 1;
 
-        chars = 0;
-        while (*p && chars < page_size) {
-            putchar(*p++);
-            chars++;
-        }
+    top_line = 0;
 
-        printf("\n");
-        ui_hline();
-        if (*p) {
-            printf("  [Space]: more    [Q]: back\n");
 #ifdef __CC65__
-            ch = toupper(cgetc());
-#else
-            ch = toupper(getchar());
-#endif
-        } else {
-            printf("  [END]  Press any key...\n");
-#ifdef __CC65__
-            cgetc();
-#else
-            getchar();
-#endif
-            ch = 'Q';
+    /* Draw fixed frame — never redrawn inside the loop to avoid flicker. */
+    HOME();
+    ui_header("VIEW POST", "Q:back");
+    ui_hline();
+    /* Row 2: post title, padded to full width */
+    gotoxy(0, 2);
+    {
+        int tlen = (int)strlen(s_val);
+        if (tlen > cols - 2) { s_val[cols - 2] = '\0'; tlen = cols - 2; }
+        printf("  %s", s_val);
+        for (i = tlen + 2; i < cols; i++) putchar(' ');
+    }
+    /* Row 3: separator */
+    gotoxy(0, 3);
+    for (i = 0; i < cols; i++) putchar('=');
+
+    for (;;) {
+        /* Repaint the scrollable content area */
+        vp_draw(top_line, er, len, cols);
+
+        /* Status bar: inverse-video on the last screen row.
+           String is exactly 39 chars; fill to cols-1 to avoid wrapping. */
+        gotoxy(0, VP_HDR + er);
+        revers(1);
+        printf("Arrows:scroll  Spc:pgdn  B:pgup  Q:back");
+        for (i = 39; i < cols - 1; i++) putchar(' ');
+        revers(0);
+
+        ch = cgetc();
+
+        if (ch == 'q' || ch == 'Q') break;
+        if (ch == 0x0B) {                    /* up arrow */
+            if (top_line > 0) top_line--;
+        } else if (ch == 0x0A) {             /* down arrow */
+            if (top_line + er < total_lines) top_line++;
+        } else if (ch == ' ') {              /* Space = page down */
+            top_line += er;
+            if (top_line + er > total_lines)
+                top_line = (total_lines > er) ? total_lines - er : 0;
+        } else if (ch == 'b' || ch == 'B') { /* B = page up */
+            top_line -= er;
+            if (top_line < 0) top_line = 0;
         }
-    } while (*p && ch != 'Q');
+    }
+
+#else
+    /* Non-CC65: character-count pager (no gotoxy available) */
+    {
+        const char *p = s_body;
+        int page_size = (screen_width >= 80) ? 80 * 17 : 40 * 16;
+        int chars;
+        do {
+            HOME();
+            ui_header("VIEW POST", *p ? "Spc: More  Q: Back" : "Any: Back");
+            ui_hline();
+            printf("\n  %s\n", s_val);
+            ui_hline();
+            chars = 0;
+            while (*p && chars < page_size) {
+                putchar(*p++);
+                chars++;
+            }
+            printf("\n");
+            ui_hline();
+            if (*p) {
+                printf("  [Space]: more    [Q]: back\n");
+                ch = toupper(getchar());
+            } else {
+                printf("  [END]  Press any key...\n");
+                getchar();
+                ch = 'Q';
+            }
+        } while (*p && ch != 'Q');
+    }
+#endif
 }
 
 /* ── new_post ──────────────────────────────────────────────── */
@@ -610,6 +736,7 @@ void edit_post(void)
     ui_hline();
     printf("\n  Loading post...\n");
 
+    /* Fetch title + category via JSON (short fields, json_query safe). */
     snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/markdown",
              server_url, s_ids[sel]);
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
@@ -620,11 +747,13 @@ void edit_post(void)
     perr = network_json_parse(s_spec);
     s_val[0]       = '\0';
     s_id_result[0] = '\0';
-    s_body[0]      = '\0';
     network_json_query(s_spec, "/title", s_val);
     network_json_query(s_spec, "/category", s_id_result);
-    network_json_query(s_spec, "/markdown_body", s_body);
     network_close(s_spec);
+
+    /* Fetch body via plain text to bypass the IWM firmware's 512-byte
+       network_json_query result limit. */
+    fetch_body(s_ids[sel]);
 
     /* --- Phase 3: edit fields --- */
     HOME();
@@ -918,7 +1047,7 @@ void read_line_with_default(char *buf, int maxlen)
 
 /* ── body_editor ───────────────────────────────────────────── */
 
-#define WP_HDR 2   /* header rows above edit area (title row + separator row) */
+#define WP_HDR 2   /* header rows above body-editor area (header + dash-line) */
 
 /* Render s_body in the edit area starting at byte offset `top`.
    `cur` is the cursor offset; drawn in inverse video.
@@ -1016,6 +1145,35 @@ static int wp_offset_at(int tr, int tc, int len, int cols)
     return len;
 }
 
+/* Render s_body in the view-post content area starting at visual line
+   `top_line`.  Each of the `er` rows is positioned with gotoxy() and
+   padded to `cols` with spaces so stale content from a prior paint is
+   fully erased.  Visual line numbering matches wp_offset_at / wp_get_pos
+   — newline-terminated lines AND word-wrapped lines both advance the
+   line counter by one.                                                 */
+static void vp_draw(int top_line, int er, int len, int cols)
+{
+#ifdef __CC65__
+    int row, col, off;
+    off = wp_offset_at(top_line, 0, len, cols);
+    for (row = 0; row < er; row++) {
+        gotoxy(0, VP_HDR + row);
+        col = 0;
+        /* Print characters up to a newline or the right edge */
+        while (col < cols && off < len && s_body[off] != '\n') {
+            putchar(s_body[off++]);
+            col++;
+        }
+        /* Consume the newline (if present) without printing it */
+        if (off < len && s_body[off] == '\n') off++;
+        /* Pad remainder of visual row with spaces */
+        while (col < cols) { putchar(' '); col++; }
+    }
+#else
+    (void)top_line; (void)er; (void)len; (void)cols;
+#endif
+}
+
 /* Full-screen word-processor style editor for s_body.
    Arrow keys navigate; printable keys insert at cursor; DEL=backspace.
    Frame is drawn once. Text/scroll changes call we_draw (full repaint of
@@ -1031,7 +1189,8 @@ void body_editor(void)
     int first_row;
     int sl_col, sl_off, sl_col2, sl_found;  /* single-line fast path */
 
-    cursor = 0; top_char = 0; cur_row = 0; cur_col = 0;
+    cursor = 0; top_char = 0; cur_row = 0; cur_col = 0; tr = 0;
+    ar = 0; ac = 0;   /* cursor visual position — maintained incrementally */
     er   = (screen_width >= 80) ? 20 : 18;
     cols = screen_width;
 
@@ -1063,22 +1222,46 @@ void body_editor(void)
 
         if (ch == 27) break;                        /* ESC = done */
 
+        /* Key handlers maintain ar/ac incrementally to avoid a full
+           wp_get_pos(cursor,...) traversal on every keypress.
+           Rules:
+             printable/RETURN: ac++ or ar++,ac=0  (O(1), no scan)
+             right:            check one byte      (O(1))
+             left/DEL ac>0:    ac--                (O(1))
+             left/DEL ac==0:   wp_get_pos needed   (moving to prev row end)
+             up/down:          wp_get_pos needed   (clamped col on target row)
+           tr (row of top_char) is cached; only recomputed on scroll.      */
+
         if (ch == 0x08) {                           /* left arrow */
-            if (cursor > 0) cursor--;
+            if (cursor > 0) {
+                cursor--;
+                if (ac > 0) { ac--; }
+                else { wp_get_pos(cursor, len, cols, &ar, &ac); }
+            }
         } else if (ch == 0x15) {                    /* right arrow */
-            if (cursor < len) cursor++;
+            if (cursor < len) {
+                if (s_body[cursor] == '\n' || ac + 1 >= cols) { ar++; ac = 0; }
+                else { ac++; }
+                cursor++;
+            }
         } else if (ch == 0x0B) {                    /* up arrow */
-            wp_get_pos(cursor, len, cols, &ar, &ac);
-            if (ar > 0) cursor = wp_offset_at(ar - 1, ac, len, cols);
+            if (ar > 0) {
+                cursor = wp_offset_at(ar - 1, ac, len, cols);
+                wp_get_pos(cursor, len, cols, &ar, &ac);
+            }
         } else if (ch == 0x0A) {                    /* down arrow */
-            wp_get_pos(cursor, len, cols, &ar, &ac);
             new_pos = wp_offset_at(ar + 1, ac, len, cols);
-            if (new_pos != cursor) cursor = new_pos;
+            if (new_pos != cursor) {
+                cursor = new_pos;
+                wp_get_pos(cursor, len, cols, &ar, &ac);
+            }
         } else if (ch == 0x7F) {                    /* DEL = backspace */
             if (cursor > 0) {
                 cursor--;
                 memmove(s_body + cursor, s_body + cursor + 1, len - cursor);
                 len--;
+                if (ac > 0) { ac--; }
+                else { wp_get_pos(cursor, len, cols, &ar, &ac); }
                 text_changed = 1;
             }
         } else if (ch == 0x0D) {                    /* RETURN = newline */
@@ -1086,6 +1269,7 @@ void body_editor(void)
                 memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
                 s_body[cursor++] = '\n';
                 len++;
+                ar++;  ac = 0;
                 text_changed = 1;
             }
         } else if (ch >= 0x20 && ch < 0x7F) {      /* printable char */
@@ -1093,23 +1277,22 @@ void body_editor(void)
                 memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
                 s_body[cursor++] = (char)ch;
                 len++;
+                if (ac + 1 >= cols) { ar++;  ac = 0; }
+                else { ac++; }
                 text_changed = 1;
             }
         }
 
-        wp_get_pos(cursor, len, cols, &ar, &ac);
-
+        /* tr = visual row of top_char — cached; only recomputed when
+           top_char itself changes (a scroll event).                    */
         if (cursor < top_char) {
             top_char = wp_row_start(cursor, len, cols);
             scroll_changed = 1;
             wp_get_pos(top_char, len, cols, &tr, &new_pos);
-        } else {
+        } else if (ar - tr >= er) {
+            top_char = wp_offset_at(ar - er + 1, 0, len, cols);
             wp_get_pos(top_char, len, cols, &tr, &new_pos);
-            if (ar - tr >= er) {
-                top_char = wp_offset_at(ar - er + 1, 0, len, cols);
-                wp_get_pos(top_char, len, cols, &tr, &new_pos);
-                scroll_changed = 1;
-            }
+            scroll_changed = 1;
         }
 
         if (text_changed || scroll_changed) {
@@ -1140,6 +1323,9 @@ void body_editor(void)
             } else {
                 first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
                 we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
+                /* Re-sync ar/ac from we_draw's ground-truth traversal so any
+                   incremental-tracking edge-case is corrected immediately. */
+                ar = cur_row + tr;  ac = cur_col;
                 gotoxy(0, WP_HDR + er);
                 printf("Len:%-4d", len);
                 gotoxy(cur_col, WP_HDR + cur_row);
@@ -1147,6 +1333,7 @@ void body_editor(void)
 #else
             first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
             we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
+            ar = cur_row + tr;  ac = cur_col;
 #endif
         } else {
             cur_row = ar - tr;

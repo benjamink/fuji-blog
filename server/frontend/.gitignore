@@ -12,3 +12,6 @@ dist/
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Ignore the .htpasswd file in the data directory, which may contain sensitive information
+data/.htpasswd

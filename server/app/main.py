@@ -1,24 +1,24 @@
 import hashlib
 import time
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 import json
-import os
 from pathlib import Path
 
+from .auth import create_access_token, require_admin, verify_password
 from .schemas import (
     BlogPostCreate,
-    BlogPostUpdate,
     BlogPostPublish,
     BlogPostResponse,
     BlogPostSummary,
     BlogPostMarkdown,
+    LoginRequest,
     RenderRequest,
     RenderResponse,
     StatsResponse,
+    TokenResponse,
 )
 from .storage import BlogStorage
 from .blog_renderer import BlogRenderer
@@ -81,12 +81,35 @@ def _response(post) -> BlogPostResponse:
 
 
 # ============================================================================
+# AUTH ENDPOINTS
+# ============================================================================
+
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+def login(req: LoginRequest) -> TokenResponse:
+    """Validate credentials against the htpasswd file and return a JWT."""
+    if not verify_password(req.username, req.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+        )
+    return TokenResponse(access_token=create_access_token(req.username))
+
+
+# ============================================================================
 # BLOG POST ENDPOINTS
 # ============================================================================
 
 
-@app.post("/api/posts", response_model=BlogPostSummary, status_code=status.HTTP_201_CREATED)
-def create_post(post: BlogPostCreate) -> BlogPostSummary:
+@app.post(
+    "/api/posts",
+    response_model=BlogPostSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_post(
+    post: BlogPostCreate,
+    _: str = Depends(require_admin),
+) -> BlogPostSummary:
     """Create a new blog post."""
     return _summary(storage.create_post(
         title=post.title,
@@ -164,8 +187,9 @@ def list_categories(published_only: bool = False):
 def list_posts(
     published_only: bool = False,
     category: str = Query(default=None, description="Filter by category name"),
+    _: str = Depends(require_admin),
 ) -> list[BlogPostResponse]:
-    """List all posts (or published posts only), optionally filtered by category."""
+    """List all posts including drafts (admin). Requires authentication."""
     return [
         _response(p)
         for p in storage.list_posts(published_only=published_only, category=category)
@@ -216,6 +240,27 @@ def get_post_markdown(post_id: str) -> BlogPostMarkdown:
     return BlogPostMarkdown(title=post.title, category=post.category, markdown_body=post.markdown_body)
 
 
+@app.get("/api/posts/{post_id}/body")
+def get_post_body(post_id: str) -> Response:
+    """Return the raw Markdown body as plain text.
+
+    The FujiNet IWM firmware caps network_json_query() results at 512 bytes,
+    so long bodies are silently truncated when fetched via the /markdown JSON
+    endpoint.  This endpoint returns the body as plain text so the client can
+    use network_read() instead, which has no per-field length limit.
+    """
+    post = storage.get_post(post_id)
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Post {post_id} not found",
+        )
+    return Response(
+        content=post.markdown_body,
+        media_type="text/plain; charset=utf-8",
+    )
+
+
 @app.get("/api/posts/{post_id}", response_model=BlogPostResponse)
 def get_post(post_id: str) -> BlogPostResponse:
     """Retrieve a single post by ID."""
@@ -247,8 +292,12 @@ async def update_post(post_id: str, request: Request) -> BlogPostSummary:
 
 
 @app.patch("/api/posts/{post_id}/publish", response_model=BlogPostSummary)
-def toggle_publish(post_id: str, publish: BlogPostPublish) -> BlogPostSummary:
-    """Toggle the published state of a post."""
+def toggle_publish(
+    post_id: str,
+    publish: BlogPostPublish,
+    _: str = Depends(require_admin),
+) -> BlogPostSummary:
+    """Toggle the published state of a post. Requires authentication."""
     updated = storage.update_post(post_id=post_id, published=publish.published)
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Post {post_id} not found")
@@ -274,8 +323,11 @@ async def toggle_publish_via_put(post_id: str, request: Request) -> BlogPostSumm
 
 
 @app.delete("/api/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_post(post_id: str) -> None:
-    """Delete a blog post."""
+def delete_post(
+    post_id: str,
+    _: str = Depends(require_admin),
+) -> None:
+    """Delete a blog post. Requires authentication."""
     if not storage.delete_post(post_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Post {post_id} not found")
 
