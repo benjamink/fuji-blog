@@ -60,7 +60,8 @@ def _summary(post) -> BlogPostSummary:
         title=post.title,
         slug=post.slug,
         category=post.category,
-        published=post.published,
+        # int so network_json_query on FujiNet IWM returns "1"/"0", not ""
+        published=int(post.published),
         created_at=post.created_at,
         updated_at=post.updated_at,
     )

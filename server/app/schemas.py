@@ -15,7 +15,6 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
-
 class BlogPostCreate(BaseModel):
     """Request model for creating a new blog post."""
     title: str = Field(..., min_length=1, max_length=200)
@@ -52,12 +51,17 @@ class BlogPostResponse(BaseModel):
 
 class BlogPostSummary(BaseModel):
     """Compact response for write operations (no body fields).
-    Keeps the response small enough for FujiNet's receive buffer."""
+    Keeps the response small enough for FujiNet's receive buffer.
+
+    published is typed as int (1/0) rather than bool (true/false) so that
+    network_json_query on the FujiNet IWM firmware can read it: the firmware's
+    JSON query primitive only handles string/number leaf values and returns an
+    empty string for JSON boolean primitives."""
     id: str
     title: str
     slug: str
     category: str
-    published: bool
+    published: int
     created_at: datetime
     updated_at: datetime
 

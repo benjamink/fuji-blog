@@ -1,0 +1,21 @@
+# Node artefacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python artefacts
+__pycache__/
+**/*.pyc
+**/*.pyo
+.venv/
+**/*.egg-info/
+dist/
+
+# Runtime data — never bake posts or credentials into the image
+data/posts/
+data/.htpasswd
+
+# Dev / editor noise
+.env
+.env.*
+*.md

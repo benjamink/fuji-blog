@@ -77,6 +77,7 @@ static const char s_months_str[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
 /* Static forward declarations — helpers defined near body_editor but
    also called from view_post which appears earlier in this file.      */
+static int  row_next(int off, int len, int cols, int *disp_end);
 static void wp_get_pos(int target, int len, int cols, int *row, int *col);
 static int  wp_offset_at(int tr, int tc, int len, int cols);
 static void vp_draw(int top_line, int er, int len, int cols);
@@ -207,7 +208,8 @@ static int fetch_post_list(const char *suffix)
         snprintf(s_path, sizeof(s_path), "/%d/published", i);
         s_val[0] = '\0';
         network_json_query(s_spec, s_path, s_val);
-        s_pub[i] = (strcmp(s_val, "true") == 0);
+        /* server returns published as integer 1/0 so network_json_query can read it */
+        s_pub[i] = (s_val[0] == '1');
 
         count++;
     }
@@ -1058,45 +1060,55 @@ static void we_draw(int top, int cur, int er, int len, int cols,
                     int first_row, int *cr, int *cc)
 {
 #ifdef __CC65__
-    int off = top, row = 0, col = 0, r, found = 0;
+    int off = top, row = 0, col, de, ns, p;
+    int found = 0;
     *cr = 0; *cc = 0;
 
-    /* Advance offset to first_row without touching the screen */
+    /* Advance past first_row rows without rendering, tracking cursor */
     while (row < first_row) {
-        col = 0;
-        while (col < cols) {
-            if (off == cur && !found) { *cr = row; *cc = col; found = 1; }
-            if (off >= len || s_body[off] == '\n') break;
-            off++; col++;
+        ns = row_next(off, len, cols, &de);
+        if (!found && cur >= off && cur < ns) {
+            *cr = row;
+            *cc = (cur < de) ? (cur - off) : (de - off);
+            found = 1;
         }
-        if (off < len && s_body[off] == '\n') off++;
-        else if (off >= len) { row++; break; }
-        row++;
+        if (off >= len) { row++; break; }
+        off = ns; row++;
     }
 
-    /* Render from first_row onward */
+    /* Render rows [first_row, er) */
     while (row < er) {
         gotoxy(0, WP_HDR + row);
-        col = 0;
-        while (col < cols) {
-            if (off == cur && !found) {
+        de = off; ns = off;
+        if (off < len) ns = row_next(off, len, cols, &de);
+        col = 0; p = off;
+
+        /* Print chars up to disp_end, with inverse-video cursor */
+        while (p < de) {
+            if (p == cur && !found) {
                 *cr = row; *cc = col; found = 1;
-                revers(1);
-                if (off < len && s_body[off] != '\n') putchar(s_body[off++]);
-                else putchar(' ');
-                revers(0);
-                col++; continue;
+                revers(1); putchar(s_body[p]); revers(0);
+            } else {
+                putchar(s_body[p]);
             }
-            if (off >= len || s_body[off] == '\n') break;
-            putchar(s_body[off++]);
+            p++; col++;
+        }
+
+        /* Cursor at end-of-row (newline pos, wrap-space, or end-of-text) */
+        if (p == cur && !found) {
+            *cr = row; *cc = col; found = 1;
+            revers(1); putchar(' '); revers(0);
             col++;
         }
-        for (r = col; r < cols; r++) putchar(' ');
-        if (off < len && s_body[off] == '\n') off++;
-        else if (off >= len) { row++; break; }
-        row++;
+
+        /* Pad to full screen width */
+        for (; col < cols; col++) putchar(' ');
+
+        if (off >= len) { row++; break; }
+        off = ns; row++;
     }
-    if (!found) { *cr = (row < er ? row : er - 1); *cc = col; }
+
+    if (!found) { *cr = (row < er ? row : er - 1); *cc = 0; }
     for (; row < er; row++) {
         gotoxy(0, WP_HDR + row);
         for (col = 0; col < cols; col++) putchar(' ');
@@ -1107,40 +1119,66 @@ static void we_draw(int top, int cur, int er, int len, int cols,
 #endif
 }
 
+/* Scan one visual row of s_body starting at byte offset `off`.
+   Word-wrap: break at the last space before the column limit; fall back to a
+   hard break at `cols` if no space exists (long URLs, etc.).
+   *disp_end: first offset NOT displayed on this row (the wrap-space or '\n'
+              or end-of-text position; chars [off .. *disp_end) are printed).
+   Returns the offset where the NEXT visual row starts
+   (*disp_end+1 for '\n' or word-wrap; *disp_end for hard-wrap/end-of-text). */
+static int row_next(int off, int len, int cols, int *disp_end)
+{
+    int col = 0, last_sp = -1, p = off;
+    while (p < len && s_body[p] != '\n' && col < cols) {
+        if (s_body[p] == ' ') last_sp = p;
+        p++; col++;
+    }
+    if (p >= len)          { *disp_end = p; return p; }      /* end of text  */
+    if (s_body[p] == '\n') { *disp_end = p; return p + 1; }  /* explicit '\n' */
+    /* col == cols: prefer word-wrap, else hard-wrap */
+    if (last_sp >= 0)      { *disp_end = last_sp; return last_sp + 1; }
+    *disp_end = p; return p;                                  /* hard wrap    */
+}
+
 /* Find the absolute (screen row, col) of byte offset `target` in s_body. */
 static void wp_get_pos(int target, int len, int cols, int *row, int *col)
 {
-    int off = 0, r = 0, c = 0;
-    while (off < target && off < len) {
-        if (s_body[off++] == '\n') { r++; c = 0; }
-        else if (++c >= cols) { c = 0; r++; }
+    int off = 0, r = 0, de, ns;
+    while (off < len) {
+        ns = row_next(off, len, cols, &de);
+        if (target < ns) {
+            *row = r;
+            *col = (target < de) ? (target - off) : (de - off);
+            return;
+        }
+        off = ns; r++;
     }
-    *row = r; *col = c;
+    *row = r; *col = 0;
 }
 
 /* Find the byte offset of the first char on the screen-row containing `target`. */
 static int wp_row_start(int target, int len, int cols)
 {
-    int off = 0, col = 0, rs = 0;
-    while (off < target && off < len) {
-        char c = s_body[off++];
-        if (c == '\n') { col = 0; rs = off; }
-        else if (++col >= cols) { col = 0; rs = off; }
+    int off = 0, de, ns;
+    while (off < len) {
+        ns = row_next(off, len, cols, &de);
+        if (target < ns) return off;
+        off = ns;
     }
-    return rs;
+    return off;
 }
 
 /* Find the byte offset of the char at absolute screen position (tr, tc). */
 static int wp_offset_at(int tr, int tc, int len, int cols)
 {
-    int off = 0, row = 0, col = 0;
-    while (off <= len) {
-        if (row == tr && (col >= tc || off >= len || s_body[off] == '\n'))
-            return off;
-        if (off >= len) break;
-        if (s_body[off] == '\n') { row++; col = 0; }
-        else if (++col >= cols) { col = 0; row++; }
-        off++;
+    int off = 0, r = 0, de, ns;
+    while (off < len) {
+        ns = row_next(off, len, cols, &de);
+        if (r == tr) {
+            int row_w = de - off;
+            return (tc < row_w) ? off + tc : de;
+        }
+        off = ns; r++;
     }
     return len;
 }
@@ -1154,20 +1192,16 @@ static int wp_offset_at(int tr, int tc, int len, int cols)
 static void vp_draw(int top_line, int er, int len, int cols)
 {
 #ifdef __CC65__
-    int row, col, off;
+    int row, col, off, de, ns;
     off = wp_offset_at(top_line, 0, len, cols);
     for (row = 0; row < er; row++) {
         gotoxy(0, VP_HDR + row);
+        de = off; ns = off;
+        if (off < len) ns = row_next(off, len, cols, &de);
         col = 0;
-        /* Print characters up to a newline or the right edge */
-        while (col < cols && off < len && s_body[off] != '\n') {
-            putchar(s_body[off++]);
-            col++;
-        }
-        /* Consume the newline (if present) without printing it */
-        if (off < len && s_body[off] == '\n') off++;
-        /* Pad remainder of visual row with spaces */
+        while (off < de) { putchar(s_body[off++]); col++; }
         while (col < cols) { putchar(' '); col++; }
+        off = ns;
     }
 #else
     (void)top_line; (void)er; (void)len; (void)cols;
@@ -1187,7 +1221,6 @@ void body_editor(void)
     int text_changed, scroll_changed;
     int old_cursor, old_cr, old_cc;
     int first_row;
-    int sl_col, sl_off, sl_col2, sl_found;  /* single-line fast path */
 
     cursor = 0; top_char = 0; cur_row = 0; cur_col = 0; tr = 0;
     ar = 0; ac = 0;   /* cursor visual position — maintained incrementally */
@@ -1233,35 +1266,19 @@ void body_editor(void)
            tr (row of top_char) is cached; only recomputed on scroll.      */
 
         if (ch == 0x08) {                           /* left arrow */
-            if (cursor > 0) {
-                cursor--;
-                if (ac > 0) { ac--; }
-                else { wp_get_pos(cursor, len, cols, &ar, &ac); }
-            }
+            if (cursor > 0) cursor--;
         } else if (ch == 0x15) {                    /* right arrow */
-            if (cursor < len) {
-                if (s_body[cursor] == '\n' || ac + 1 >= cols) { ar++; ac = 0; }
-                else { ac++; }
-                cursor++;
-            }
+            if (cursor < len) cursor++;
         } else if (ch == 0x0B) {                    /* up arrow */
-            if (ar > 0) {
-                cursor = wp_offset_at(ar - 1, ac, len, cols);
-                wp_get_pos(cursor, len, cols, &ar, &ac);
-            }
+            if (ar > 0) cursor = wp_offset_at(ar - 1, ac, len, cols);
         } else if (ch == 0x0A) {                    /* down arrow */
             new_pos = wp_offset_at(ar + 1, ac, len, cols);
-            if (new_pos != cursor) {
-                cursor = new_pos;
-                wp_get_pos(cursor, len, cols, &ar, &ac);
-            }
+            if (new_pos != cursor) cursor = new_pos;
         } else if (ch == 0x7F) {                    /* DEL = backspace */
             if (cursor > 0) {
                 cursor--;
                 memmove(s_body + cursor, s_body + cursor + 1, len - cursor);
                 len--;
-                if (ac > 0) { ac--; }
-                else { wp_get_pos(cursor, len, cols, &ar, &ac); }
                 text_changed = 1;
             }
         } else if (ch == 0x0D) {                    /* RETURN = newline */
@@ -1269,7 +1286,6 @@ void body_editor(void)
                 memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
                 s_body[cursor++] = '\n';
                 len++;
-                ar++;  ac = 0;
                 text_changed = 1;
             }
         } else if (ch >= 0x20 && ch < 0x7F) {      /* printable char */
@@ -1277,14 +1293,15 @@ void body_editor(void)
                 memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
                 s_body[cursor++] = (char)ch;
                 len++;
-                if (ac + 1 >= cols) { ar++;  ac = 0; }
-                else { ac++; }
                 text_changed = 1;
             }
         }
 
-        /* tr = visual row of top_char — cached; only recomputed when
-           top_char itself changes (a scroll event).                    */
+        /* Always recompute ar/ac from cursor — word-wrap makes incremental
+           tracking unreliable (a single inserted char can reflow a whole row). */
+        wp_get_pos(cursor, len, cols, &ar, &ac);
+
+        /* tr = visual row of top_char — only recomputed on scroll. */
         if (cursor < top_char) {
             top_char = wp_row_start(cursor, len, cols);
             scroll_changed = 1;
@@ -1297,39 +1314,15 @@ void body_editor(void)
 
         if (text_changed || scroll_changed) {
 #ifdef __CC65__
-            if (!scroll_changed && ch != 0x0D && ar - tr == old_cr) {
-                /* Single-line fast path: only repaint from edit point to EOL. */
-                if (ch == 0x7F) { sl_col = ac;     sl_off = cursor; }
-                else             { sl_col = old_cc; sl_off = cursor - 1; }
-                gotoxy(sl_col, WP_HDR + (ar - tr));
-                sl_col2 = sl_col; sl_found = 0;
-                while (sl_col2 < cols) {
-                    if (sl_off == cursor && !sl_found) {
-                        sl_found = 1;
-                        revers(1);
-                        if (sl_off < len && s_body[sl_off] != '\n') putchar(s_body[sl_off++]);
-                        else putchar(' ');
-                        revers(0);
-                        sl_col2++; continue;
-                    }
-                    if (sl_off >= len || s_body[sl_off] == '\n') break;
-                    putchar(s_body[sl_off++]);
-                    sl_col2++;
-                }
-                for (; sl_col2 < cols; sl_col2++) putchar(' ');
-                cur_row = ar - tr; cur_col = ac;
-                gotoxy(0, WP_HDR + er);
-                printf("Len:%-4d", len);
-            } else {
-                first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
-                we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
-                /* Re-sync ar/ac from we_draw's ground-truth traversal so any
-                   incremental-tracking edge-case is corrected immediately. */
-                ar = cur_row + tr;  ac = cur_col;
-                gotoxy(0, WP_HDR + er);
-                printf("Len:%-4d", len);
-                gotoxy(cur_col, WP_HDR + cur_row);
-            }
+            /* Word-wrap means any text change may reflow the current row and
+               the row below, so always do a full repaint (no single-line fast
+               path). */
+            first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
+            we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
+            ar = cur_row + tr;  ac = cur_col;
+            gotoxy(0, WP_HDR + er);
+            printf("Len:%-4d", len);
+            gotoxy(cur_col, WP_HDR + cur_row);
 #else
             first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
             we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
