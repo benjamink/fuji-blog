@@ -25,7 +25,7 @@ ExecStart=/usr/bin/docker run --rm \
     -p ${PORT}:8000 \
     -v ${DATA_DIR}:/app/data \
     -e JWT_SECRET=${JWT_SECRET} \
-    superbenk/fujiblogger:latest
+    docker.io/superbenk/fujiblogger:latest
 
 ExecStop=/usr/bin/docker stop fujiblogger
 
