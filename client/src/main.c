@@ -9,6 +9,15 @@
 #include "network.h"
 #include "ui.h"
 
+/* FujiNet App Key — creator @BEE5, app 0x01 (FujiBlogger).
+   Key slot 0x00 stores the server URL (up to MAX_APPKEY_LEN = 64 bytes).
+   $DD Read returns a 66-byte response (2-byte length prefix + 64 data bytes)
+   so the read buffer must be MAX_APPKEY_LEN + 2; fuji_read_appkey() sets
+   *count to the actual stored byte count via that prefix. */
+#define APPKEY_CREATOR  0xBEE5
+#define APPKEY_APP      0x01
+#define APPKEY_KEY_URL  0x00
+
 #define MAX_TITLE_LEN 80
 #define MAX_CATEGORY_LEN 64
 #define MAX_CONTENT_LEN 2000
@@ -42,6 +51,8 @@ void show_network_status(void);
 void get_screen_width(void);
 void show_config(void);
 void test_server(void);
+static void appkey_load(void);
+static void appkey_save(void);
 int  read_line(char *buf, int maxlen);
 void read_line_with_default(char *buf, int maxlen);
 void body_editor(void);
@@ -53,7 +64,7 @@ int  editor_insert_line(char *body, int body_max, int n, const char *text);
 
 /* Global variables */
 int screen_width = 40;  /* Detect 40 or 80 column mode */
-char server_url[256] = "http://192.168.15.35:8001";
+char server_url[256] = "http://fujiblogger.example.com";
 
 /* Shared BSS buffers — menu functions never run concurrently so one copy each
    covers all callers. Sizes chosen to keep the apple2 BSS segment within its
@@ -373,6 +384,7 @@ static int pick_category(void)
 int main(void)
 {
     get_screen_width();
+    appkey_load();   /* override default server URL if one is stored */
     show_splash();
 
     while (1) {
@@ -1690,6 +1702,37 @@ void show_stats(void)
     wait_key();
 }
 
+/* ── appkey_load / appkey_save ─────────────────────────────── */
+/* Uses the FujiNet $DD/$DE SIO App Key commands via the fujinet-lib
+   high-level wrappers.  fuji_set_appkey_details() sets the creator and
+   app context; fuji_read_appkey/$fuji_write_appkey() issue Open + Read/
+   Write, auto-closing the key file after each operation.
+   Read buffer must be MAX_APPKEY_LEN + 2 (66 bytes): the $DD response
+   prepends a 2-byte actual-length field before the 64-byte data payload. */
+
+static void appkey_load(void)
+{
+    static uint8_t buf[MAX_APPKEY_LEN + 2]; /* 66: 2-byte length + 64 data */
+    uint16_t count = 0;
+
+    fuji_set_appkey_details(APPKEY_CREATOR, APPKEY_APP, DEFAULT);
+    buf[0] = '\0';
+    if (!fuji_read_appkey(APPKEY_KEY_URL, &count, buf)) return;
+    if (count == 0 || buf[0] == '\0') return;
+    if (count >= MAX_APPKEY_LEN) count = MAX_APPKEY_LEN - 1;
+    buf[count] = '\0';
+    strncpy(server_url, (char *)buf, sizeof(server_url) - 1);
+    server_url[sizeof(server_url) - 1] = '\0';
+}
+
+static void appkey_save(void)
+{
+    uint16_t len = (uint16_t)strlen(server_url);
+    if (len >= MAX_APPKEY_LEN) len = MAX_APPKEY_LEN - 1;
+    fuji_set_appkey_details(APPKEY_CREATOR, APPKEY_APP, DEFAULT);
+    fuji_write_appkey(APPKEY_KEY_URL, len, (uint8_t *)server_url);
+}
+
 /* ── show_config ───────────────────────────────────────────── */
 
 void show_config(void)
@@ -1703,6 +1746,8 @@ void show_config(void)
         printf("\n");
         ui_indent(); printf("1.  Server URL\n");
         printf("\n      %s\n\n", server_url);
+        ui_indent(); printf("2.  Save URL to App Key\n");
+        printf("\n");
         ui_hline();
         printf("  Q: Back   Select: ");
 
@@ -1723,6 +1768,10 @@ void show_config(void)
                 printf("\n  URL updated.\n\n");
                 wait_key();
             }
+        } else if (choice == '2') {
+            appkey_save();
+            printf("\n  URL saved to App Key.\n\n");
+            wait_key();
         }
     }
 }
