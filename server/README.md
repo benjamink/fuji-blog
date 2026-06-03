@@ -130,13 +130,67 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ---
 
+## Admin Authentication
+
+The admin panel (`/admin`) and all write API endpoints are protected by JWT-based HTTP Bearer authentication.  Credentials are stored in an [Apache htpasswd](https://httpd.apache.org/docs/current/programs/htpasswd.html)-format file using bcrypt hashes.
+
+### Default credentials
+
+| Username | Password   |
+| -------- | ---------- |
+| `admin`  | `password` |
+
+> **Change the default password before exposing the server to the internet.**
+
+### Setting the password — Docker
+
+```bash
+# Interactive prompt inside the running container
+docker exec -it fujiblogger .venv/bin/python scripts/set_password.py
+```
+
+Restart the container after updating the password so the server reloads `data/.htpasswd`:
+
+```bash
+docker restart fujiblogger
+```
+
+### Setting the password — local / bare-metal
+
+```bash
+cd server
+uv run python scripts/set_password.py
+```
+
+The script prompts for a username (default: `admin`) and password, writes a bcrypt hash to `data/.htpasswd`, and prints the recommended startup command with a stable `JWT_SECRET`.
+
+### Keeping sessions alive across restarts
+
+By default, `JWT_SECRET` is regenerated on every startup, which invalidates all existing tokens.  Set it once and store it somewhere safe:
+
+```bash
+export JWT_SECRET=$(openssl rand -hex 32)
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+For Docker, pass it via the environment file (see `fujiblogger.service`):
+
+```bash
+echo "JWT_SECRET=$(openssl rand -hex 32)" >> /etc/fujiblogger/env
+```
+
+---
+
 ## Environment Variables
 
-| Variable   | Default                    | Description                                  |
-| ---------- | -------------------------- | -------------------------------------------- |
-| `DATA_DIR` | `<repo>/server/data`       | Root directory; `posts/` is created inside   |
-| `HOST`     | `0.0.0.0`                  | Passed to uvicorn `--host`                   |
-| `PORT`     | `8000`                     | Passed to uvicorn `--port`                   |
+| Variable          | Default              | Description                                                     |
+| ----------------- | -------------------- | --------------------------------------------------------------- |
+| `DATA_DIR`        | `<repo>/server/data` | Root directory; `posts/` and `.htpasswd` are created inside     |
+| `HOST`            | `0.0.0.0`            | Passed to uvicorn `--host`                                      |
+| `PORT`            | `8000`               | Passed to uvicorn `--port`                                      |
+| `JWT_SECRET`      | *(random on start)*  | HMAC signing secret for JWTs; set to a stable value in prod     |
+| `JWT_EXPIRE_HOURS`| `24`                 | Token lifetime in hours                                         |
+| `HTPASSWD_PATH`   | `data/.htpasswd`     | Path to the bcrypt htpasswd credentials file                    |
 
 ---
 
@@ -417,6 +471,8 @@ npm install some-package
 | Post edits via text editor not appearing | Server cache | Restart uvicorn (or wait for `--reload` to detect the file change) |
 | `PUT /api/posts` returns 422 | Missing required fields | Body must include `title` and `markdown_body` |
 | `PUT /api/posts/{id}/delete` returns 404 | Post already deleted; dedup TTL expired | Expected — the delete succeeded on the first request |
+| `/admin` login fails with 401 | Wrong credentials or default password still set | Run `scripts/set_password.py` to set a new password |
+| Logged out after server restart | `JWT_SECRET` was not set (random key regenerated) | Set `JWT_SECRET` to a stable value (see above) |
 | Large response causes FujiNet parse error | Response body too big | Ensure write endpoints return `BlogPostSummary`, not `BlogPostResponse` |
 
 ---
