@@ -1,18 +1,33 @@
 [Unit]
-Description=FujiBlogger Server
-After=network.target
+Description=FujiBlogger Server (Docker)
+After=docker.service network-online.target
+Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/fujiblogger/server
-ExecStart=/usr/bin/uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=5
 
-# Override these in /etc/systemd/system/fujiblogger.service.d/local.conf
-Environment=DATA_DIR=/opt/fujiblogger/server/data
-Environment=PORT=8000
-Environment=HOST=0.0.0.0
+# Persistent configuration — create this file before first start:
+#   sudo mkdir -p /etc/fujiblogger
+#   echo "JWT_SECRET=$(openssl rand -hex 32)" | sudo tee /etc/fujiblogger/env
+#   echo "DATA_DIR=/opt/fujiblogger/data"    | sudo tee -a /etc/fujiblogger/env
+#   echo "PORT=8001"                          | sudo tee -a /etc/fujiblogger/env
+EnvironmentFile=/etc/fujiblogger/env
+
+# Remove any leftover container from a previous run, then start fresh.
+# The '-' prefix means a non-zero exit from docker rm is ignored (container
+# may not exist on first start).
+ExecStartPre=-/usr/bin/docker rm -f fujiblogger
+
+ExecStart=/usr/bin/docker run --rm \
+    --name fujiblogger \
+    -p ${PORT}:8000 \
+    -v ${DATA_DIR}:/app/data \
+    -e JWT_SECRET=${JWT_SECRET} \
+    superbenk/fujiblogger:latest
+
+ExecStop=/usr/bin/docker stop fujiblogger
 
 [Install]
 WantedBy=multi-user.target
