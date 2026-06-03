@@ -81,6 +81,8 @@ static int  row_next(int off, int len, int cols, int *disp_end);
 static void wp_get_pos(int target, int len, int cols, int *row, int *col);
 static int  wp_offset_at(int tr, int tc, int len, int cols);
 static void vp_draw(int top_line, int er, int len, int cols);
+static void we_draw(int top, int cur, int er, int len, int cols,
+                    int first_row, int last_row, int *cr, int *cc);
 
 /* ── Internal helpers ──────────────────────────────────────── */
 
@@ -251,6 +253,119 @@ static int pick_from_list(int count)
     if (ch >= '1' && ch < '1' + count)
         return ch - '1';
     return -1;
+}
+
+/* ── fetch_category_list ───────────────────────────────────── */
+/* Fetches /api/categories and stores names in s_titles[].  s_ids[] and
+   s_val[] are deliberately NOT touched: s_ids[] may hold a live post-ID
+   for edit_post's Phase 4, and s_val[] holds the post title entered before
+   pick_category() was called.
+   Returns count (0..MAX_API_POSTS) or -1 on connection error. */
+static int fetch_category_list(void)
+{
+    int count, i;
+    int16_t pn;
+    uint8_t perr;
+
+    count = 0;
+    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/categories", server_url);
+    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+    if (perr) {
+        screen_error("Connection error", (int)perr);
+        return -1;
+    }
+    perr = network_json_parse(s_spec);
+    if (perr) {
+        network_close(s_spec);
+        return 0;   /* no categories yet — not a hard error */
+    }
+
+    for (i = 0; i < MAX_API_POSTS; i++) {
+        snprintf(s_path, sizeof(s_path), "/%d/name", i);
+        s_titles[i][0] = '\0';
+        pn = network_json_query(s_spec, s_path, s_titles[i]);
+        if (pn <= 0 || !s_titles[i][0]) break;
+        s_titles[i][MAX_API_TITLE_LEN] = '\0';
+        count++;
+    }
+    network_close(s_spec);
+    return count;
+}
+
+/* ── pick_category ─────────────────────────────────────────── */
+/* Show a numbered category picker.  s_id_result must hold the
+   current category on entry (empty string for new posts).
+   On return s_id_result holds the chosen or typed category.
+   Returns 0 normally, -1 if ESC pressed with no value set. */
+static int pick_category(void)
+{
+    int count, cap, i, ch, tlen, maxw;
+
+    screen_loading("CATEGORY");
+    count = fetch_category_list();
+    if (count < 0) return -1;
+
+    cap = (count > 9) ? 9 : count;
+
+    HOME();
+    ui_header("CATEGORY", "");
+    ui_hline();
+    printf("\n");
+
+    maxw = screen_width - (screen_width >= 80 ? 12 : 8);
+    if (maxw < 4) maxw = 4;
+
+    for (i = 0; i < cap; i++) {
+        tlen = (int)strlen(s_titles[i]);
+        if (tlen > maxw) { s_titles[i][maxw] = '\0'; tlen = maxw; }
+        printf("  %d. %s\n", i + 1, s_titles[i]);
+    }
+    printf("  N. New...\n");
+
+    if (s_id_result[0]) {
+        tlen = (int)strlen(s_id_result);
+        if (tlen > maxw) s_id_result[maxw] = '\0';
+        printf("\n  Current: %s\n", s_id_result);
+    }
+
+    printf("\n");
+    ui_hline();
+    if (s_id_result[0])
+        printf("  1-%d/N/Enter to keep: ", cap > 0 ? cap : 0);
+    else
+        printf("  Select (1-%d) or N: ", cap > 0 ? cap : 0);
+
+#ifdef __CC65__
+    ch = cgetc();
+#else
+    ch = getchar();
+#endif
+    putchar('\n');
+
+    if (ch == 27) {                         /* ESC */
+        if (s_id_result[0]) return 0;       /* keep existing */
+        return -1;
+    }
+
+    if ((ch == '\r' || ch == '\n') && s_id_result[0])
+        return 0;                           /* keep existing */
+
+    ch = toupper((unsigned char)ch);
+
+    if (ch >= '1' && ch < '1' + cap) {
+        strncpy(s_id_result, s_titles[ch - '1'], MAX_API_CATEGORY_LEN);
+        s_id_result[MAX_API_CATEGORY_LEN] = '\0';
+        return 0;
+    }
+
+    if (ch == 'N') {
+        printf("  New category: ");
+        s_id_result[0] = '\0';
+        read_line(s_id_result, MAX_CATEGORY_LEN);
+        return 0;
+    }
+
+    return 0;   /* unrecognised key — keep whatever was in s_id_result */
 }
 
 /* ── main ──────────────────────────────────────────────────── */
@@ -612,13 +727,10 @@ void view_post(const char *id)
 void new_post(void)
 {
     /* s_val = title, s_id_result = category */
-    int i;
-    int ch;
     int json_len;
     uint8_t perr;
     int16_t pn;
 
-    i = 0;
     s_val[0]       = '\0';
     s_id_result[0] = '\0';
     s_body[0]      = '\0';
@@ -630,37 +742,9 @@ void new_post(void)
     ui_indent(); printf("Title    : ");
     read_line(s_val, MAX_TITLE_LEN);
     printf("\n");
-    ui_indent(); printf("Category : ");
-    read_line(s_id_result, MAX_CATEGORY_LEN);
-    printf("\n");
-    ui_hline();
-    printf("  Content (ESC when done):\n");
-    ui_hline();
+    pick_category();
 
-#ifdef __CC65__
-    while (i < MAX_API_MARKDOWN_BODY_LEN) {
-        ch = cgetc();
-        if (ch == 27) break;
-        if ((ch == 8 || ch == 127) && i > 0) {
-            i--;
-            putchar('\b');
-            putchar(' ');
-            putchar('\b');
-            continue;
-        }
-        if (ch == '\r') ch = '\n';
-        if (ch >= 32 || ch == '\n') {
-            s_body[i++] = (char)ch;
-            putchar(ch);
-        }
-    }
-#else
-    while ((ch = getchar()) != 4 && ch != 26 && ch != EOF
-           && i < MAX_API_MARKDOWN_BODY_LEN) {
-        s_body[i++] = (char)ch;
-    }
-#endif
-    s_body[i] = '\0';
+    body_editor();
 
     HOME();
     ui_header("NEW POST", "Save Draft?");
@@ -668,7 +752,7 @@ void new_post(void)
     printf("\n");
     printf("  Title    : %s\n", s_val);
     printf("  Category : %s\n", s_id_result);
-    printf("  Length   : %d chars\n\n", i);
+    printf("  Length   : %d chars\n\n", (int)strlen(s_body));
     ui_hline();
     printf("  Save as draft? (Y/N): ");
 
@@ -765,8 +849,7 @@ void edit_post(void)
     ui_indent(); printf("Title    : ");
     read_line_with_default(s_val, (int)sizeof(s_val));
     printf("\n");
-    ui_indent(); printf("Category : ");
-    read_line_with_default(s_id_result, MAX_API_CATEGORY_LEN + 1);
+    pick_category();
     printf("\n  Body: %d chars\n", (int)strlen(s_body));
     body_editor();
 
@@ -1054,10 +1137,13 @@ void read_line_with_default(char *buf, int maxlen)
 /* Render s_body in the edit area starting at byte offset `top`.
    `cur` is the cursor offset; drawn in inverse video.
    `first_row` is the first edit-area row to render (rows above are untouched).
+   `last_row` limits how far down the repaint goes; pass `er` for a full repaint.
+     Rows [last_row, er) are only cleared when last_row == er (full repaint).
+     For text-only changes pass a small last_row to avoid clearing blank rows.
    `len` = strlen(s_body), `er` = edit rows, `cols` = screen width.
    Sets cr and cc to the cursor's row/col within the edit area. */
 static void we_draw(int top, int cur, int er, int len, int cols,
-                    int first_row, int *cr, int *cc)
+                    int first_row, int last_row, int *cr, int *cc)
 {
 #ifdef __CC65__
     int off = top, row = 0, col, de, ns, p;
@@ -1076,8 +1162,8 @@ static void we_draw(int top, int cur, int er, int len, int cols,
         off = ns; row++;
     }
 
-    /* Render rows [first_row, er) */
-    while (row < er) {
+    /* Render rows [first_row, last_row) */
+    while (row < last_row) {
         gotoxy(0, WP_HDR + row);
         de = off; ns = off;
         if (off < len) ns = row_next(off, len, cols, &de);
@@ -1109,12 +1195,18 @@ static void we_draw(int top, int cur, int er, int len, int cols,
     }
 
     if (!found) { *cr = (row < er ? row : er - 1); *cc = 0; }
-    for (; row < er; row++) {
-        gotoxy(0, WP_HDR + row);
-        for (col = 0; col < cols; col++) putchar(' ');
+    /* Only clear trailing blank rows on a full repaint.  Partial repaints
+       (text-only changes) leave rows beyond last_row untouched — they cannot
+       have changed since a single-char edit affects at most ~3 visual rows. */
+    if (last_row >= er) {
+        for (; row < er; row++) {
+            gotoxy(0, WP_HDR + row);
+            for (col = 0; col < cols; col++) putchar(' ');
+        }
     }
 #else
     (void)top; (void)cur; (void)er; (void)len; (void)cols; (void)first_row;
+    (void)last_row;
     *cr = 0; *cc = 0;
 #endif
 }
@@ -1129,13 +1221,16 @@ static void we_draw(int top, int cur, int er, int len, int cols,
 static int row_next(int off, int len, int cols, int *disp_end)
 {
     int col = 0, last_sp = -1, p = off;
-    while (p < len && s_body[p] != '\n' && col < cols) {
+    /* cols - 1: keep one column free so content never occupies the last
+       screen column.  On 80-col screens this wraps at 79, on 40-col at 39,
+       on any arbitrary width at width-1. */
+    while (p < len && s_body[p] != '\n' && col < cols - 1) {
         if (s_body[p] == ' ') last_sp = p;
         p++; col++;
     }
     if (p >= len)          { *disp_end = p; return p; }      /* end of text  */
     if (s_body[p] == '\n') { *disp_end = p; return p + 1; }  /* explicit '\n' */
-    /* col == cols: prefer word-wrap, else hard-wrap */
+    /* col == cols - 1: prefer word-wrap, else hard-wrap */
     if (last_sp >= 0)      { *disp_end = last_sp; return last_sp + 1; }
     *disp_end = p; return p;                                  /* hard wrap    */
 }
@@ -1219,7 +1314,7 @@ void body_editor(void)
     int er, cols, ch, len;
     int ar, ac, tr, new_pos, i;
     int text_changed, scroll_changed;
-    int old_cursor, old_cr, old_cc;
+    int old_cursor, old_cr, old_cc, old_ar;
     int first_row;
 
     cursor = 0; top_char = 0; cur_row = 0; cur_col = 0; tr = 0;
@@ -1233,9 +1328,18 @@ void body_editor(void)
     putchar('\n');
 
     len = (int)strlen(s_body);
-    we_draw(top_char, cursor, er, len, cols, 0, &cur_row, &cur_col);
+    we_draw(top_char, cursor, er, len, cols, 0, er, &cur_row, &cur_col);
 
 #ifdef __CC65__
+    /* Redraw the fixed frame after we_draw: the 80-col firmware's inverse-
+       video state from the cursor draw can leave row 0 corrupted.
+       Repositioning at row 0 and redrawing is the reliable fix.          */
+    revers(0);
+    gotoxy(0, 0);
+    ui_header("BODY EDITOR", "Esc: Done");
+    gotoxy(0, 1);
+    for (i = 0; i < cols; i++) putchar('-');
+
     gotoxy(0, WP_HDR + er);
     printf("Len:%-4d", len);
     gotoxy(cur_col, WP_HDR + cur_row);
@@ -1245,6 +1349,7 @@ void body_editor(void)
         old_cursor = cursor;
         old_cr = cur_row;
         old_cc = cur_col;
+        old_ar = ar;
 
 #ifdef __CC65__
         ch = cgetc();
@@ -1297,8 +1402,30 @@ void body_editor(void)
             }
         }
 
-        /* Always recompute ar/ac from cursor — word-wrap makes incremental
-           tracking unreliable (a single inserted char can reflow a whole row). */
+#ifdef __CC65__
+        /* Ultra-fast path: printable char appended at end of text AND the
+           cursor is safely away from the row edge (old_cc < cols-2 means
+           adding one char cannot trigger word-wrap).  We skip wp_get_pos
+           (an O(n) scan from position 0), scroll detection, we_draw, and
+           printf — all of which dominate per-keypress cost on a 1 MHz 6502.
+           The Len counter is updated on the next non-fast-path event. */
+        if (text_changed
+                && old_cursor == len - 1
+                && old_cc < cols - 2
+                && s_body[cursor - 1] != '\n') {
+            ar  = old_ar;
+            ac  = old_cc + 1;
+            cur_row = old_cr;
+            cur_col = ac;
+            gotoxy(old_cc, WP_HDR + old_cr);
+            putchar(s_body[old_cursor]);        /* newly typed char */
+            revers(1); putchar(' '); revers(0); /* inverse cursor   */
+            gotoxy(cur_col, WP_HDR + cur_row);
+            continue;  /* skip wp_get_pos, scroll, repaint entirely */
+        }
+#endif
+
+        /* General path: recompute position and repaint as needed. */
         wp_get_pos(cursor, len, cols, &ar, &ac);
 
         /* tr = visual row of top_char — only recomputed on scroll. */
@@ -1314,18 +1441,70 @@ void body_editor(void)
 
         if (text_changed || scroll_changed) {
 #ifdef __CC65__
-            /* Word-wrap means any text change may reflow the current row and
-               the row below, so always do a full repaint (no single-line fast
-               path). */
-            first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
-            we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
-            ar = cur_row + tr;  ac = cur_col;
-            gotoxy(0, WP_HDR + er);
-            printf("Len:%-4d", len);
-            gotoxy(cur_col, WP_HDR + cur_row);
+            /* Mid-row fast path: single-char insert or backspace that did
+               not cause a word-wrap.  Only the tail of the current row
+               changed — skip we_draw and printf entirely.
+               off_row = start of current row in s_body = old_cursor - old_cc.
+               For insert start_col = old_cc; for backspace start_col = ac. */
+            if (text_changed && !scroll_changed
+                    && ar == old_ar
+                    && ch != 0x0D) {
+                int off_row  = old_cursor - old_cc;
+                int start_col = (cursor < old_cursor) ? ac : old_cc;
+                int de_row, p, col;
+                row_next(off_row, len, cols, &de_row);
+                cur_row = old_cr;
+                cur_col = ac;
+                gotoxy(start_col, WP_HDR + old_cr);
+                p = off_row + start_col; col = start_col;
+                while (p < de_row) {
+                    if (p == cursor) {
+                        revers(1);
+                        putchar(s_body[p]);
+                        revers(0);
+                    } else {
+                        putchar(s_body[p]);
+                    }
+                    p++; col++;
+                }
+                if (p == cursor) {
+                    revers(1); putchar(' '); revers(0);
+                    col++;
+                }
+                for (; col < cols; col++) putchar(' ');
+                gotoxy(cur_col, WP_HDR + cur_row);
+            } else {
+                /* Full/partial repaint for word-wrap, scroll, RETURN. */
+                if (scroll_changed) {
+                    first_row = 0;
+                } else {
+                    first_row = old_cr > 0 ? old_cr - 1 : 0;
+                }
+                {
+                    int last_row = scroll_changed ? er
+                                 : (old_cr + 3 < er ? old_cr + 3 : er);
+                    we_draw(top_char, cursor, er, len, cols, first_row,
+                            last_row, &cur_row, &cur_col);
+                }
+                ar = cur_row + tr;  ac = cur_col;
+                revers(0);
+                /* On scroll, we_draw rewrites all content rows which can
+                   leave the 80-col firmware's inverse state dirty.
+                   Redraw the header + dashes to guarantee a clean frame. */
+                if (scroll_changed) {
+                    gotoxy(0, 0);
+                    ui_header("BODY EDITOR", "Esc: Done");
+                    gotoxy(0, 1);
+                    for (i = 0; i < cols; i++) putchar('-');
+                }
+                gotoxy(0, WP_HDR + er);
+                printf("Len:%-4d", len);
+                gotoxy(cur_col, WP_HDR + cur_row);
+            }
 #else
             first_row = scroll_changed ? 0 : (old_cr > 0 ? old_cr - 1 : 0);
-            we_draw(top_char, cursor, er, len, cols, first_row, &cur_row, &cur_col);
+            we_draw(top_char, cursor, er, len, cols, first_row, er,
+                    &cur_row, &cur_col);
             ar = cur_row + tr;  ac = cur_col;
 #endif
         } else {

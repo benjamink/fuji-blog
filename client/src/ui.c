@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "ui.h"
 
 #ifdef __CC65__
@@ -31,38 +32,55 @@ void ui_header(const char *title, const char *hint)
     col          = 0;
 
 #ifdef __CC65__
+    /* On Apple IIc 80-col, the firmware's inverse character codes only map
+       correctly for uppercase ASCII.  Lowercase characters sent through
+       cputc/revers produce wrong Apple II character codes.  All header text
+       is therefore forced to uppercase — natural for an Apple II header bar.
+       cputs/cputc are used (not printf) so cc65's revers() takes effect.  */
     revers(1);
+
+    cputs("FUJIBLOGGER");
+    col = 11;
+
+    for (i = col; i < center_start; i++) { cputc(' '); col++; }
+
+    cputs(title);   /* callers already pass uppercase titles */
+    col += tlen;
+
+    for (i = col; i < right_start; i++) { cputc(' '); col++; }
+
+    if (col + hlen <= screen_width) {
+        for (i = 0; hint[i]; i++) {
+            cputc((char)toupper((unsigned char)hint[i]));
+        }
+        col += hlen;
+    }
+
+    for (i = col; i < screen_width; i++) cputc(' ');
+    cputc('\n');
+
+    revers(0);
 #else
     printf("\033[7m");
-#endif
 
-    /* Left: app name */
     printf("FujiBlogger");
     col = 11;
 
-    /* Pad to centre of title */
     for (i = col; i < center_start; i++) { putchar(' '); col++; }
 
-    /* Centre: title */
     printf("%s", title);
     col += tlen;
 
-    /* Pad to right-edge of hint */
     for (i = col; i < right_start; i++) { putchar(' '); col++; }
 
-    /* Right: hint (only if it fits) */
     if (col + hlen <= screen_width) {
         printf("%s", hint);
         col += hlen;
     }
 
-    /* Fill remaining columns */
     for (i = col; i < screen_width; i++) putchar(' ');
     putchar('\n');
 
-#ifdef __CC65__
-    revers(0);
-#else
     printf("\033[0m");
 #endif
 }

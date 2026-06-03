@@ -42,6 +42,10 @@ PLATFORM_COMBOS = \
   msxdos+=msx \
   adam_cpm+=adam
 
+# Use a project-local linker config that raises __HIMEM__ from $9600 to $B000.
+# The Apple IIc has RAM to $BEFF; the stock limit targets 48 KB machines.
+LDFLAGS += -C apple2-fujiblog.cfg
+
 include mekkogx/toplevel-rules.mk
 
 # If you need to add extra platform-specific steps, do it below:
