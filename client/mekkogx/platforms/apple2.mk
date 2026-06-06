@@ -17,13 +17,14 @@ PRODOS8_DISK ?= $(CACHE_PLATFORM)/PRODOS8-$(PRODOS_VERSION).po
 CC65_UTILS_DIR := $(shell cl65 --print-target-path --target $(PLATFORM))/$(PLATFORM)/util
 LOADER_SYSTEM := loader.system
 
-$(BUILD_DISK): $(BUILD_EXEC) $(PRODOS8_DISK) $(DISK_EXTRA_DEPS) $(DISK_EXTRA_FILES) | $(R2R_PD)
+$(BUILD_DISK): $(BUILD_EXEC) $(PRODOS8_DISK) $(DISK_EXTRA_DEPS) $(DISK_EXTRA_FILES) $(SPLASH_BIN) | $(R2R_PD)
 	$(call require,$(DISK_TOOL),$(DISK_TOOL_INFO))
 	$(call require,$(DISK_TOOL_X),$(DISK_TOOL_INFO))
 	$(DISK_TOOL_X) create -d $@ --format $(PRODOS8_DISK) --prodos --size=140kb --name=$(PRODUCT_BASE)
 	$(DISK_TOOL_X) export --as -d $@ BASIC.SYSTEM > $(CACHE_PLATFORM)/BASIC.SYSTEM
 	$(DISK_TOOL) -d $@ BASIC.SYSTEM
 	$(call copy-to-disk,-as,$<,$(PRODUCT_BASE),$@)
+	$(if $(SPLASH_BIN),$(call copy-to-disk,-as,$(SPLASH_BIN),SPLASH.SYSTEM,$@);)
 	$(call copy-to-disk,-p,$(CC65_UTILS_DIR)/$(LOADER_SYSTEM),$(PRODUCT_BASE).SYSTEM SYS 0x2000,$@)
 	$(call copy-to-disk,-as,$(CACHE_PLATFORM)/BASIC.SYSTEM,BASIC.SYSTEM,$@)
 	$(foreach f,$(DISK_EXTRA_FILES),$(call copy-to-disk,-ptx,$(f),$(notdir $(f)),$@);)

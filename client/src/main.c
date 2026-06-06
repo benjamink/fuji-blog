@@ -8,6 +8,7 @@
 #include "api.h"
 #include "network.h"
 #include "ui.h"
+#include "splash.h"
 
 /* FujiNet App Key — creator @BEE5, app 0x01 (FujiBlogger).
    Key slot 0x00 stores the server URL (up to MAX_APPKEY_LEN = 64 bytes).
@@ -86,8 +87,35 @@ static char s_id_result[MAX_API_ID_LEN + 1];
    Access month i with: %.3s applied to (s_months_str + i*3)            */
 static const char s_months_str[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
+/* ── Open Apple + ? context help ───────────────────────────────────────── */
+/* Open Apple is paddle button 0 at $C061 (bit 7 = pressed).
+   We check OA_HELD() immediately after cgetc() — while the user still
+   holds the key combination — to distinguish OA+? from a bare '?'.      */
+#ifdef __CC65__
+#define OA_HELD()  ((*(volatile uint8_t *)0xC061) & 0x80u)
+
+static void show_help_screen(const char *title,
+                              const char *const *lines, uint8_t n)
+{
+    uint8_t i;
+    HOME();
+    ui_header(title, "Any key: Back");
+    ui_hline();
+    printf("\n");
+    for (i = 0; i < n; i++) printf("%s\n", lines[i]);
+    printf("\n");
+    ui_hline();
+    cgetc();
+}
+#endif
+
 /* Static forward declarations — helpers defined near body_editor but
    also called from view_post which appears earlier in this file.      */
+#ifdef __CC65__
+static void draw_menu_row(uint8_t row, uint8_t hi, uint8_t cols, uint8_t ind, const char *label);
+static int  run_menu(const char *const *labels, const char *keys, int count, uint8_t start_row, uint8_t cols, uint8_t ind);
+static void pfl_draw_row(int idx, int hi, int maxw, int cols, int ind);
+#endif
 static int  row_next(int off, int len, int cols, int *disp_end);
 static void wp_get_pos(int target, int len, int cols, int *row, int *col);
 static int  wp_offset_at(int tr, int tc, int len, int cols);
@@ -233,9 +261,37 @@ static int fetch_post_list(const char *suffix)
 /* Display a numbered post list and prompt for a selection.
    Returns the 0-based index chosen, or -1 if the user cancelled or
    there are no posts (error/empty already displayed). */
+#ifdef __CC65__
+/* Draw one post row at its screen position, highlighted or normal.
+   Post rows start at row 3 (caller has drawn header/hline/blank above). */
+static void pfl_draw_row(int idx, int hi, int maxw, int cols, int ind)
+{
+    const char *title = s_titles[idx];
+    int n    = idx + 1;
+    int pub  = s_pub[idx];
+    int tlen = (int)strlen(title);
+    int print_len = (tlen > maxw) ? maxw : tlen;
+    int pfx  = (n >= 10) ? 8 : 7;   /* "NN. [X] " vs "N. [X] " */
+    int pad  = cols - ind - pfx - print_len;
+    int j;
+
+    gotoxy(0, (uint8_t)(3 + idx));
+    revers((uint8_t)hi);
+    for (j = 0; j < ind; j++) cputc(' ');
+    if (n >= 10) { cputc('0' + n/10); cputc('0' + n%10); }
+    else           cputc('0' + n);
+    cputc('.'); cputc(' ');
+    cputc('['); cputc(pub ? 'P' : 'D'); cputc(']'); cputc(' ');
+    for (j = 0; j < print_len; j++)
+        cputc(hi ? (char)toupper((unsigned char)title[j]) : title[j]);
+    if (pad > 0) for (j = 0; j < pad; j++) cputc(' ');
+    revers(0);
+}
+#endif
+
 static int pick_from_list(int count)
 {
-    int i, ch, tlen, maxw;
+    int i, tlen, maxw;
 
     if (count == 0) {
         printf("  No posts found.\n\n");
@@ -245,25 +301,67 @@ static int pick_from_list(int count)
 
     maxw = screen_width - (screen_width >= 80 ? 28 : 12);
     if (maxw < 4) maxw = 4;
+    /* Truncate titles to fit — needed for both CC65 and non-CC65 paths */
     for (i = 0; i < count; i++) {
         tlen = (int)strlen(s_titles[i]);
         if (tlen > maxw) s_titles[i][maxw] = '\0';
-        ui_post_row(i + 1, s_pub[i], s_titles[i]);
     }
+
+#ifdef __CC65__
+    /* CC65 path: draw ALL items via gotoxy — never mix printf and gotoxy
+       for the same rows (they track cursor positions differently).        */
+    {
+        uint8_t cols = (uint8_t)screen_width;
+        uint8_t ind  = (cols >= 80) ? 20 : 4;
+        int sel = 0, done = 0, ch;
+
+        for (i = 0; i < count; i++)
+            pfl_draw_row(i, 0, maxw, (int)cols, (int)ind);
+
+        /* Footer: blank row then hline then hint */
+        gotoxy(0, (uint8_t)(3 + count));
+        printf("\n");
+        ui_hline();
+        cputs("  Arrow keys / Return, or 1-9 / Q");
+
+        pfl_draw_row(0, 1, maxw, (int)cols, (int)ind);
+
+        while (!done) {
+            ch = cgetc();
+            if (ch == 0x0B) {               /* up   */
+                pfl_draw_row(sel, 0, maxw, (int)cols, (int)ind);
+                sel = (sel > 0) ? sel - 1 : count - 1;
+                pfl_draw_row(sel, 1, maxw, (int)cols, (int)ind);
+            } else if (ch == 0x0A) {         /* down */
+                pfl_draw_row(sel, 0, maxw, (int)cols, (int)ind);
+                sel = (sel < count - 1) ? sel + 1 : 0;
+                pfl_draw_row(sel, 1, maxw, (int)cols, (int)ind);
+            } else if (ch == 0x0D) {         /* Return */
+                done = 1;
+            } else if (ch >= '1' && ch < '1' + count) {
+                pfl_draw_row(sel, 0, maxw, (int)cols, (int)ind);
+                sel = ch - '1';
+                pfl_draw_row(sel, 1, maxw, (int)cols, (int)ind);
+                done = 1;
+            } else if (toupper(ch) == 'Q') {
+                sel = -1; done = 1;
+            }
+        }
+        return sel;
+    }
+#else
+    for (i = 0; i < count; i++)
+        ui_post_row(i + 1, s_pub[i], s_titles[i]);
     printf("\n");
     ui_hline();
     printf("  Select (1-%d) or Q: ", count);
-
-#ifdef __CC65__
-    ch = cgetc();
-#else
-    ch = getchar();
+    {
+        int ch = getchar();
+        putchar('\n');
+        if (ch >= '1' && ch < '1' + count) return ch - '1';
+        return -1;
+    }
 #endif
-    putchar('\n');
-
-    if (ch >= '1' && ch < '1' + count)
-        return ch - '1';
-    return -1;
 }
 
 /* ── fetch_category_list ───────────────────────────────────── */
@@ -326,57 +424,106 @@ static int pick_category(void)
     maxw = screen_width - (screen_width >= 80 ? 12 : 8);
     if (maxw < 4) maxw = 4;
 
+    /* Truncate titles to maxw (needed by both paths) */
     for (i = 0; i < cap; i++) {
         tlen = (int)strlen(s_titles[i]);
-        if (tlen > maxw) { s_titles[i][maxw] = '\0'; tlen = maxw; }
-        printf("  %d. %s\n", i + 1, s_titles[i]);
+        if (tlen > maxw) s_titles[i][maxw] = '\0';
     }
-    printf("  N. New...\n");
-
     if (s_id_result[0]) {
         tlen = (int)strlen(s_id_result);
         if (tlen > maxw) s_id_result[maxw] = '\0';
-        printf("\n  Current: %s\n", s_id_result);
     }
 
+#ifdef __CC65__
+    {
+        /* Pre-format labels so run_menu() can handle all input.
+           Buffers are static to stay off cc65's limited stack.   */
+        static char   cat_bufs[10][24];  /* "N. catname" — 10 slots */
+        static const char *cat_ptrs[11]; /* up to 9 cats + N option */
+        static char   cat_keys[11];
+        uint8_t cols = (uint8_t)screen_width;
+        uint8_t ind  = (cols >= 80) ? 4 : 2;
+        int total = cap + 1;
+        int sel, k;
+
+        for (k = 0; k < cap; k++) {
+            snprintf(cat_bufs[k], sizeof(cat_bufs[k]),
+                     "%d. %s", k + 1, s_titles[k]);
+            cat_ptrs[k] = cat_bufs[k];
+            cat_keys[k] = (char)('1' + k);
+        }
+        cat_ptrs[cap] = "N. New...";
+        cat_keys[cap] = 'N';
+
+        /* Current category info below items, footer at row 3+total+2 */
+        if (s_id_result[0]) {
+            gotoxy(0, (uint8_t)(3 + total + 1));
+            printf("  Current: %s\n", s_id_result);
+        }
+        gotoxy(0, (uint8_t)(3 + total + 2));
+        ui_hline();
+        if (s_id_result[0])
+            cputs("  Arrow keys / Return, or N / ESC=keep");
+        else
+            cputs("  Arrow keys / Return, or N");
+
+        sel = run_menu(cat_ptrs, cat_keys, total, 3, cols, ind);
+
+        if (sel < 0) {                    /* ESC */
+            if (s_id_result[0]) return 0; /* keep existing */
+            return -1;
+        }
+        if (sel < cap) {
+            strncpy(s_id_result, s_titles[sel], MAX_API_CATEGORY_LEN);
+            s_id_result[MAX_API_CATEGORY_LEN] = '\0';
+        } else {                          /* N = new category */
+            /* Prompt at row 3+total+4: below hint (3+t+3), on a blank row.
+               Clear the row first so no hline remnant bleeds through.   */
+            {
+                uint8_t pr = (uint8_t)(3 + total + 4);
+                uint8_t j;
+                gotoxy(0, pr);
+                for (j = 0; j < cols; j++) cputc(' ');
+                gotoxy(0, pr);
+            }
+            printf("  New category: ");
+            s_id_result[0] = '\0';
+            read_line(s_id_result, MAX_CATEGORY_LEN);
+        }
+        return 0;
+    }
+#else
+    /* Non-CC65: draw items via printf then prompt */
+    for (i = 0; i < cap; i++)
+        printf("  %d. %s\n", i + 1, s_titles[i]);
+    printf("  N. New...\n");
+    if (s_id_result[0])
+        printf("\n  Current: %s\n", s_id_result);
     printf("\n");
     ui_hline();
     if (s_id_result[0])
-        printf("  1-%d/N/Enter to keep: ", cap > 0 ? cap : 0);
+        printf("  1-%d/N/ESC=keep: ", cap > 0 ? cap : 0);
     else
         printf("  Select (1-%d) or N: ", cap > 0 ? cap : 0);
-
-#ifdef __CC65__
-    ch = cgetc();
-#else
-    ch = getchar();
+    {   /* non-CC65 plain text path */
+        int ch_in = getchar();
+        putchar('\n');
+        if (ch_in == 27)                       { if (s_id_result[0]) return 0; return -1; }
+        if ((ch_in=='\r'||ch_in=='\n') && s_id_result[0]) return 0;
+        ch_in = toupper((unsigned char)ch_in);
+        if (ch_in >= '1' && ch_in < '1' + cap) {
+            strncpy(s_id_result, s_titles[ch_in-'1'], MAX_API_CATEGORY_LEN);
+            s_id_result[MAX_API_CATEGORY_LEN] = '\0';
+            return 0;
+        }
+        if (ch_in == 'N') {
+            printf("  New category: ");
+            s_id_result[0] = '\0';
+            read_line(s_id_result, MAX_CATEGORY_LEN);
+        }
+        return 0;
+    }
 #endif
-    putchar('\n');
-
-    if (ch == 27) {                         /* ESC */
-        if (s_id_result[0]) return 0;       /* keep existing */
-        return -1;
-    }
-
-    if ((ch == '\r' || ch == '\n') && s_id_result[0])
-        return 0;                           /* keep existing */
-
-    ch = toupper((unsigned char)ch);
-
-    if (ch >= '1' && ch < '1' + cap) {
-        strncpy(s_id_result, s_titles[ch - '1'], MAX_API_CATEGORY_LEN);
-        s_id_result[MAX_API_CATEGORY_LEN] = '\0';
-        return 0;
-    }
-
-    if (ch == 'N') {
-        printf("  New category: ");
-        s_id_result[0] = '\0';
-        read_line(s_id_result, MAX_CATEGORY_LEN);
-        return 0;
-    }
-
-    return 0;   /* unrecognised key — keep whatever was in s_id_result */
 }
 
 /* ── main ──────────────────────────────────────────────────── */
@@ -384,8 +531,8 @@ static int pick_category(void)
 int main(void)
 {
     get_screen_width();
-    appkey_load();   /* override default server URL if one is stored */
-    show_splash();
+    appkey_load();       /* override default server URL if one is stored */
+    show_splash();       /* FujiNet check + version info (HGR splash ran first) */
 
     while (1) {
         main_menu();
@@ -409,40 +556,158 @@ void get_screen_width(void)
 
 void show_splash(void)
 {
+    /* FujiNet info (version/SSID/MAC) is shown on the HGR splash screen
+       (SPLASH.SYSTEM) which runs before us.  Here we only confirm the
+       adapter is still reachable and bail out with a clear error if not. */
     AdapterConfigExtended ace;
-    int i;
-
-    HOME();
-    ui_header("FUJIBLOGGER", "");
-    ui_hline();
-    printf("\n  Initializing FujiNet...\n\n");
 
     if (!fuji_get_adapter_config_extended(&ace)) {
-        printf("  ERROR: FujiNet not detected!\n");
-        printf("  Check hardware and restart.\n\n");
-        wait_key();
+        HOME();
+        printf("\n  ERROR: FujiNet not detected! Check hardware.\n");
+        printf("\n  Press any key...");
+#ifdef __CC65__
+        cgetc();
+#else
+        getchar();
+#endif
         exit(1);
     }
-
-    printf("  FujiNet Version : %s\n", ace.fn_version);
-    printf("  Adapter SSID    : %s\n", ace.ssid);
-    printf("  MAC             : ");
-    for (i = 0; i < 6; i++) {
-        printf("%02X", ace.macAddress[i]);
-        if (i < 5) printf(":");
-    }
-    printf("\n");
-    printf("  Screen          : %d columns\n\n", screen_width);
-
-    wait_key();
+    HOME();
 }
 
 /* ── main_menu ─────────────────────────────────────────────── */
+
+/* Menu item data — file-scope statics to stay off the cc65 stack. */
+static const char *const s_menu_labels[9] = {
+    "1.  List Posts",
+    "2.  New Post",
+    "3.  Edit Post",
+    "4.  Toggle Publish",
+    "5.  Delete Post",
+    "6.  Stats",
+    "7.  Network Status",
+    "8.  Configuration",
+    "Q.  Quit"
+};
+static const char s_menu_keys[9] = {
+    '1','2','3','4','5','6','7','8','Q'
+};
+
+#ifdef __CC65__
+/* ── Reusable arrow-key menu primitives ─────────────────────────────────
+   draw_menu_row(): render one label at an explicit screen row.
+   run_menu():      generic input loop — arrow keys, Return, shortcuts.
+   All selection screens use these; no more duplicated input logic.    */
+
+static void draw_menu_row(uint8_t row, uint8_t hi,
+                           uint8_t cols, uint8_t ind,
+                           const char *label)
+{
+    uint8_t llen = (uint8_t)strlen(label);
+    uint8_t j;
+    gotoxy(0, row);
+    revers(hi);
+    for (j = 0; j < ind; j++) cputc(' ');
+    /* Apple IIc 80-col firmware garbles lowercase in inverse mode.
+       Always output through toupper() per-char when highlighted.   */
+    if (hi) {
+        const char *p = label;
+        while (*p) { cputc((char)toupper((unsigned char)*p)); p++; }
+    } else {
+        cputs(label);
+    }
+    if (cols > ind + llen)
+        for (j = 0; j < (uint8_t)(cols - ind - llen); j++) cputc(' ');
+    revers(0);
+}
+
+/* Run an arrow-key navigable list.
+   labels[count]: display strings (drawn at rows start_row … start_row+count-1)
+   keys[count]:   uppercase shortcut characters for direct selection
+   Returns the selected index (0-based), or -1 if ESC/cancelled.       */
+static int run_menu(const char *const *labels, const char *keys,
+                    int count, uint8_t start_row,
+                    uint8_t cols, uint8_t ind)
+{
+    int sel = 0, done = 0, ch, k;
+
+    for (k = 0; k < count; k++)
+        draw_menu_row((uint8_t)(start_row + k), 0, cols, ind, labels[k]);
+
+    draw_menu_row(start_row, 1, cols, ind, labels[0]);
+
+    while (!done) {
+        ch = cgetc();
+        if (ch == 0x0B) {           /* up   */
+            draw_menu_row((uint8_t)(start_row + sel), 0, cols, ind, labels[sel]);
+            sel = (sel > 0) ? sel - 1 : count - 1;
+            draw_menu_row((uint8_t)(start_row + sel), 1, cols, ind, labels[sel]);
+        } else if (ch == 0x0A) {     /* down */
+            draw_menu_row((uint8_t)(start_row + sel), 0, cols, ind, labels[sel]);
+            sel = (sel < count - 1) ? sel + 1 : 0;
+            draw_menu_row((uint8_t)(start_row + sel), 1, cols, ind, labels[sel]);
+        } else if (ch == 0x0D) {     /* Return — confirm */
+            done = 1;
+        } else if (ch == 27) {       /* ESC — cancel */
+            sel = -1; done = 1;
+        } else if (ch == '?') {                      /* ? = menu help */
+            {
+                static const char *const mh[] = {
+                    "  NAVIGATION",
+                    "  Arrow keys      Move selection up / down",
+                    "  Return          Confirm selection",
+                    "  Shortcut key    Jump directly to item",
+                    "  (shown next to each item)",
+                    "",
+                    "  ?               This help screen"
+                };
+                show_help_screen("MENU HELP", mh, 7);
+            }
+            sel = -2;   /* special: caller should redraw and re-enter */
+            done = 1;
+        } else {
+            char uch = (char)toupper((unsigned char)ch);
+            for (k = 0; k < count; k++) {
+                if (keys[k] == uch) {
+                    draw_menu_row((uint8_t)(start_row + sel), 0, cols, ind, labels[sel]);
+                    sel = k;
+                    draw_menu_row((uint8_t)(start_row + sel), 1, cols, ind, labels[sel]);
+                    done = 1; break;
+                }
+            }
+        }
+    }
+    return sel;
+}
+#endif
 
 void main_menu(void)
 {
     int choice;
 
+#ifdef __CC65__
+    {
+        uint8_t cols = (uint8_t)screen_width;
+        uint8_t ind  = (cols >= 80) ? 20 : 4;
+        int sel;
+
+        HOME();
+        ui_header("MAIN MENU", "Q: Quit");
+        ui_hline();
+
+        /* Footer at row 13 (items span rows 3-11, row 12 blank) */
+        gotoxy(0, 13);
+        ui_hline();
+        cputs("  Arrow keys / Return, or 1-8 / Q");
+
+        do {
+            sel = run_menu(s_menu_labels, s_menu_keys, 9, 3, cols, ind);
+        } while (sel == -2);  /* -2 = help shown, redraw and retry */
+        choice = (sel >= 0) ? s_menu_keys[sel] : 0;
+    }
+
+#else
+    /* Non-CC65 build: plain keyboard-only menu */
     HOME();
     ui_header("MAIN MENU", "Q: Quit");
     ui_hline();
@@ -459,8 +724,8 @@ void main_menu(void)
     printf("\n");
     ui_hline();
     printf("  Select option: ");
-
     choice = toupper(getchar());
+#endif
 
     switch (choice) {
         case '1': list_posts();          break;
@@ -508,10 +773,36 @@ void show_network_status(void)
         printf("  Server  : %s\n", server_url);
         printf("  Screen  : %d columns\n\n", screen_width);
         ui_hline();
-        printf("  T: Test Server   Q: Back   Select: ");
+        printf("  T: Test Server   K: Key Test   Q: Back   Select: ");
 
         ch = toupper(getchar());
         if (ch == 'T') test_server();
+        else if (ch == 'K') {
+            HOME();
+            ui_header("KEY TEST", "Esc: Back");
+            ui_hline();
+            printf("\n  Press any key to see its code.\n");
+            printf("  Press Esc to return.\n\n");
+            for (;;) {
+                int kc;
+#ifdef __CC65__
+                kc = cgetc();
+#else
+                kc = getchar();
+#endif
+                if (kc == 27) break;
+#ifdef __CC65__
+                printf("  dec=%3d  hex=0x%02X  char=%c  OA=$%02X\n",
+                       kc, (unsigned)kc,
+                       (kc >= 0x20 && kc < 0x7F) ? kc : '.',
+                       (unsigned)(*(volatile uint8_t *)0xC061));
+#else
+                printf("  dec=%3d  hex=0x%02X  char=%c\n",
+                       kc, (unsigned)kc,
+                       (kc >= 0x20 && kc < 0x7F) ? kc : '.');
+#endif
+            }
+        }
     } while (ch != 'Q');
 }
 
@@ -1251,8 +1542,11 @@ static int row_next(int off, int len, int cols, int *disp_end)
 static void wp_get_pos(int target, int len, int cols, int *row, int *col)
 {
     int off = 0, r = 0, de, ns;
+    int last_off = 0, last_de = 0, last_r = 0;
     while (off < len) {
+        last_off = off; last_r = r;
         ns = row_next(off, len, cols, &de);
+        last_de = de;
         if (target < ns) {
             *row = r;
             *col = (target < de) ? (target - off) : (de - off);
@@ -1260,7 +1554,16 @@ static void wp_get_pos(int target, int len, int cols, int *row, int *col)
         }
         off = ns; r++;
     }
-    *row = r; *col = 0;
+    /* Cursor at end of text: clamp to end of last visual row rather than
+       placing it at col 0 of the next (empty) row.  This avoids the cursor
+       appearing to "jump to the next line" when positioned after the last
+       character on a fully-occupied word-wrapped row.                      */
+    if (target == len && len > 0) {
+        *row = last_r;
+        *col = last_de - last_off;
+    } else {
+        *row = r; *col = 0;
+    }
 }
 
 /* Find the byte offset of the first char on the screen-row containing `target`. */
@@ -1328,6 +1631,8 @@ void body_editor(void)
     int text_changed, scroll_changed;
     int old_cursor, old_cr, old_cc, old_ar;
     int first_row;
+    int insert_mode = 1;   /* 1 = INSERT (default), 0 = OVERWRITE; Ctrl+O toggles */
+    int ta_ch = -1;        /* type-ahead: key captured during a slow repaint */
 
     cursor = 0; top_char = 0; cur_row = 0; cur_col = 0; tr = 0;
     ar = 0; ac = 0;   /* cursor visual position — maintained incrementally */
@@ -1335,7 +1640,7 @@ void body_editor(void)
     cols = screen_width;
 
     HOME();
-    ui_header("BODY EDITOR", "Esc: Done");
+    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
     for (i = 0; i < cols; i++) putchar('-');
     putchar('\n');
 
@@ -1348,12 +1653,12 @@ void body_editor(void)
        Repositioning at row 0 and redrawing is the reliable fix.          */
     revers(0);
     gotoxy(0, 0);
-    ui_header("BODY EDITOR", "Esc: Done");
+    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
     gotoxy(0, 1);
     for (i = 0; i < cols; i++) putchar('-');
 
     gotoxy(0, WP_HDR + er);
-    printf("Len:%-4d", len);
+    printf("Len:%-4d  %s", len, insert_mode ? "INS" : "OVR");
     gotoxy(cur_col, WP_HDR + cur_row);
 #endif
 
@@ -1364,7 +1669,8 @@ void body_editor(void)
         old_ar = ar;
 
 #ifdef __CC65__
-        ch = cgetc();
+        if (ta_ch >= 0) { ch = ta_ch; ta_ch = -1; }
+        else            { ch = cgetc(); }
 #else
         ch = getchar();
 #endif
@@ -1382,7 +1688,7 @@ void body_editor(void)
              up/down:          wp_get_pos needed   (clamped col on target row)
            tr (row of top_char) is cached; only recomputed on scroll.      */
 
-        if (ch == 0x08) {                           /* left arrow */
+        if (ch == 0x08) {                           /* left arrow / backspace (same key on Apple IIc) */
             if (cursor > 0) cursor--;
         } else if (ch == 0x15) {                    /* right arrow */
             if (cursor < len) cursor++;
@@ -1391,13 +1697,21 @@ void body_editor(void)
         } else if (ch == 0x0A) {                    /* down arrow */
             new_pos = wp_offset_at(ar + 1, ac, len, cols);
             if (new_pos != cursor) cursor = new_pos;
-        } else if (ch == 0x7F) {                    /* DEL = backspace */
+        } else if (ch == 0x7F) {                    /* Delete — delete previous character */
             if (cursor > 0) {
                 cursor--;
                 memmove(s_body + cursor, s_body + cursor + 1, len - cursor);
                 len--;
                 text_changed = 1;
             }
+        } else if (ch == 0x0F) {                    /* Ctrl+O = toggle INS/OVR */
+            insert_mode = !insert_mode;
+#ifdef __CC65__
+            gotoxy(0, WP_HDR + er);
+            revers(0);
+            printf("Len:%-4d  %s", len, insert_mode ? "INS" : "OVR");
+            gotoxy(cur_col, WP_HDR + cur_row);
+#endif
         } else if (ch == 0x0D) {                    /* RETURN = newline */
             if (len < MAX_API_MARKDOWN_BODY_LEN) {
                 memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
@@ -1405,11 +1719,41 @@ void body_editor(void)
                 len++;
                 text_changed = 1;
             }
+#ifdef __CC65__
+        } else if (ch == 0x1C ||                    /* Ctrl+\ = help (AppleWin) */
+                   ((unsigned char)ch == 0xBF) ||   /* OA+? in AppleWin */
+                   (ch == '?' && OA_HELD())) {      /* OA+? on real hardware */
+            {
+                static const char *const bh[] = {
+                    "  NAVIGATION",
+                    "  Arrow keys      Move cursor",
+                    "",
+                    "  EDITING",
+                    "  Delete          Delete previous char",
+                    "  Return          New line",
+                    "  Ctrl+O          Toggle Insert / Overwrite",
+                    "",
+                    "  Insert mode:    typing shifts text right",
+                    "  Overwrite mode: typing replaces at cursor",
+                    "",
+                    "  Ctrl+\\  This help     Esc   Exit editor"
+                };
+                show_help_screen("BODY EDITOR HELP", bh, 12);
+            }
+            scroll_changed = 1;                     /* force full screen redraw */
+#endif
         } else if (ch >= 0x20 && ch < 0x7F) {      /* printable char */
-            if (len < MAX_API_MARKDOWN_BODY_LEN) {
-                memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
+            if (insert_mode || cursor >= len || s_body[cursor] == '\n') {
+                /* INSERT: shift text right and insert */
+                if (len < MAX_API_MARKDOWN_BODY_LEN) {
+                    memmove(s_body + cursor + 1, s_body + cursor, len - cursor + 1);
+                    s_body[cursor++] = (char)ch;
+                    len++;
+                    text_changed = 1;
+                }
+            } else {
+                /* OVERWRITE: replace char at cursor (never replaces '\n') */
                 s_body[cursor++] = (char)ch;
-                len++;
                 text_changed = 1;
             }
         }
@@ -1490,13 +1834,23 @@ void body_editor(void)
                 if (scroll_changed) {
                     first_row = 0;
                 } else {
-                    first_row = old_cr > 0 ? old_cr - 1 : 0;
+                    /* Word-wrap only changes old_cr and the row below it.
+                       Row old_cr-1 is untouched; skip it to halve redraw cost. */
+                    first_row = old_cr;
                 }
                 {
                     int last_row = scroll_changed ? er
-                                 : (old_cr + 3 < er ? old_cr + 3 : er);
+                                 : (old_cr + 2 < er ? old_cr + 2 : er);
+#ifdef __CC65__
+                    /* Capture any key already pending before the slow repaint */
+                    if (ta_ch < 0 && kbhit()) ta_ch = cgetc();
+#endif
                     we_draw(top_char, cursor, er, len, cols, first_row,
                             last_row, &cur_row, &cur_col);
+#ifdef __CC65__
+                    /* Capture any key typed during the repaint */
+                    if (ta_ch < 0 && kbhit()) ta_ch = cgetc();
+#endif
                 }
                 ar = cur_row + tr;  ac = cur_col;
                 revers(0);
@@ -1505,12 +1859,12 @@ void body_editor(void)
                    Redraw the header + dashes to guarantee a clean frame. */
                 if (scroll_changed) {
                     gotoxy(0, 0);
-                    ui_header("BODY EDITOR", "Esc: Done");
+                    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
                     gotoxy(0, 1);
                     for (i = 0; i < cols; i++) putchar('-');
                 }
                 gotoxy(0, WP_HDR + er);
-                printf("Len:%-4d", len);
+                printf("Len:%-4d  %s", len, insert_mode ? "INS" : "OVR");
                 gotoxy(cur_col, WP_HDR + cur_row);
             }
 #else
@@ -1743,15 +2097,47 @@ void show_config(void)
         HOME();
         ui_header("CONFIGURATION", "Q: Back");
         ui_hline();
+
+#ifdef __CC65__
+        {
+            /* CC65 path: draw ALL items via gotoxy — no printf for items.
+               Items at rows 3-5, URL info at row 7, hline at row 9.     */
+            static const char *const cfg_labels[3] = {
+                "1.  Server URL",
+                "2.  Save URL to App Key",
+                "Q.  Back"
+            };
+            static const char cfg_keys[3] = { '1', '2', 'Q' };
+            uint8_t cols = (uint8_t)screen_width;
+            uint8_t ind  = (cols >= 80) ? 20 : 4;
+            int sel = 0, done = 0, ch_in, k;
+
+            /* URL info at row 7 (items 3-5, blank 6) */
+            gotoxy(0, 7);
+            printf("      %s\n", server_url);
+
+            /* Footer at row 9 */
+            gotoxy(0, 9);
+            ui_hline();
+            cputs("  Arrow keys / Return, or 1-2 / Q");
+
+            do {
+                sel = run_menu(cfg_labels, cfg_keys, 3, 3, cols, ind);
+            } while (sel == -2);
+            choice = (sel >= 0) ? cfg_keys[sel] : 'Q';
+        }
+#else
+        /* Non-CC65: plain printf menu */
         printf("\n");
         ui_indent(); printf("1.  Server URL\n");
-        printf("\n      %s\n\n", server_url);
         ui_indent(); printf("2.  Save URL to App Key\n");
-        printf("\n");
+        ui_indent(); printf("Q.  Back\n");
+        printf("\n      %s\n\n", server_url);
         ui_hline();
         printf("  Q: Back   Select: ");
-
         choice = toupper(getchar());
+#endif
+
         if (choice == 'Q') break;
 
         if (choice == '1') {

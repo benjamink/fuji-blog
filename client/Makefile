@@ -3,6 +3,7 @@
 # "FUJIBLOGGER.SYSTEM" = 18 chars — exceeds the limit.
 # The binary is therefore kept as "FUJIBLOG" → "FUJIBLOG.SYSTEM" (15 chars exactly).
 PRODUCT = fujiblog
+VERSION = 0.0.1
 PLATFORMS += apple2
 
 # You can run 'make <platform>' to build for a specific platform,
@@ -45,8 +46,35 @@ PLATFORM_COMBOS = \
 # Use a project-local linker config that raises __HIMEM__ from $9600 to $B000.
 # The Apple IIc has RAM to $BEFF; the stock limit targets 48 KB machines.
 LDFLAGS += -C apple2-fujiblog.cfg
+CFLAGS  += -DVERSION=\"$(VERSION)\"
+
+SPLASH_BIN = build/apple2/splash.a2s
 
 include mekkogx/toplevel-rules.mk
+
+# ── Splash build rules ────────────────────────────────────────────────────────
+
+SPLASH_LOGO_HGR = splash/logo.hgr
+SPLASH_ASM      = splash/splash_crt0.s splash/logo.s
+SPLASH_CSRC     = splash/splash_main.c
+CC65_LIB        = /usr/share/cc65/lib
+
+$(SPLASH_LOGO_HGR): splash/gen_hgr.py splash/fujiblogger-logo.png
+	python3 $< splash/fujiblogger-logo.png $@ $(VERSION)
+
+build/apple2:
+	mkdir -p $@
+
+$(SPLASH_BIN): $(SPLASH_ASM) $(SPLASH_CSRC) $(SPLASH_LOGO_HGR) apple2-splash.cfg | build/apple2
+	ca65 -t apple2 -o build/apple2/splash_crt0.o splash/splash_crt0.s
+	ca65 -t apple2 -o build/apple2/logo.o       splash/logo.s
+	cc65 -t apple2 -DVERSION=\"$(VERSION)\" -o build/apple2/splash_main.asm splash/splash_main.c
+	ca65 -t apple2 -o build/apple2/splash_main.o build/apple2/splash_main.asm
+	ld65 -C apple2-splash.cfg -o $@ \
+	    build/apple2/splash_crt0.o \
+	    build/apple2/logo.o \
+	    build/apple2/splash_main.o \
+	    $(CC65_LIB)/apple2.lib
 
 # If you need to add extra platform-specific steps, do it below:
 #   coco/r2r:: coco/custom-step1
