@@ -3,7 +3,7 @@
 # "FUJIBLOGGER.SYSTEM" = 18 chars — exceeds the limit.
 # The binary is therefore kept as "FUJIBLOG" → "FUJIBLOG.SYSTEM" (15 chars exactly).
 PRODUCT = fujiblog
-VERSION = 0.0.1
+VERSION = 0.0.2
 PLATFORMS += apple2
 
 # You can run 'make <platform>' to build for a specific platform,
@@ -58,14 +58,21 @@ SPLASH_LOGO_HGR = splash/logo.hgr
 SPLASH_ASM      = splash/splash_crt0.s splash/logo.s
 SPLASH_CSRC     = splash/splash_main.c
 CC65_LIB        = /usr/share/cc65/lib
+VERSION_STAMP   = build/apple2/version.stamp
 
 $(SPLASH_LOGO_HGR): splash/gen_hgr.py splash/fujiblogger-logo.png
-	python3 $< splash/fujiblogger-logo.png $@ $(VERSION)
+	python3 $< splash/fujiblogger-logo.png $@
 
 build/apple2:
 	mkdir -p $@
 
-$(SPLASH_BIN): $(SPLASH_ASM) $(SPLASH_CSRC) $(SPLASH_LOGO_HGR) apple2-splash.cfg | build/apple2
+# Version stamp: rewritten only when VERSION actually changes, so the splash
+# (which bakes VERSION into splash_main.c via -DVERSION) is rebuilt on a bump.
+.PHONY: force_version_stamp
+$(VERSION_STAMP): force_version_stamp | build/apple2
+	@printf '%s' '$(VERSION)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(VERSION)' > $@
+
+$(SPLASH_BIN): $(SPLASH_ASM) $(SPLASH_CSRC) $(SPLASH_LOGO_HGR) apple2-splash.cfg $(VERSION_STAMP) | build/apple2
 	ca65 -t apple2 -o build/apple2/splash_crt0.o splash/splash_crt0.s
 	ca65 -t apple2 -o build/apple2/logo.o       splash/logo.s
 	cc65 -t apple2 -DVERSION=\"$(VERSION)\" -o build/apple2/splash_main.asm splash/splash_main.c

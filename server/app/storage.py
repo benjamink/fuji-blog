@@ -21,29 +21,37 @@ def _category_dirname(category: str) -> str:
 
 
 def _parse_md_file(path: str):
-    """Return (meta_dict, body_str) from a markdown file with YAML frontmatter."""
+    """Return (meta_dict, body_str) from a markdown file with YAML frontmatter.
+
+    The body is returned byte-exact: _write_md_file always inserts exactly one
+    blank separator line between the frontmatter and the body, which we strip
+    back off here.  This exact round-trip is required by the chunked-append
+    upload path, which does repeated read-modify-write cycles."""
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
     if text.startswith("---\n"):
         parts = text.split("---\n", 2)
         if len(parts) == 3:
             meta = yaml.safe_load(parts[1]) or {}
-            return meta, parts[2]
+            body = parts[2]
+            if body.startswith("\n"):
+                body = body[1:]   # remove the single separator line
+            return meta, body
     return {}, text
 
 
 def _write_md_file(path: str, meta: dict, body: str) -> None:
-    """Write a markdown file with YAML frontmatter."""
+    """Write a markdown file with YAML frontmatter.
+
+    Exactly one blank separator line is written between the frontmatter and the
+    body, and the body is written verbatim (no trailing newline forced) so that
+    _parse_md_file can reproduce it byte-for-byte."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("---\n")
         yaml.dump(meta, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        f.write("---\n")
-        if body and not body.startswith("\n"):
-            f.write("\n")
+        f.write("---\n\n")
         f.write(body)
-        if body and not body.endswith("\n"):
-            f.write("\n")
 
 
 class BlogStorage:
@@ -116,7 +124,7 @@ class BlogStorage:
                 id=meta["id"],
                 title=meta["title"],
                 slug=meta["slug"],
-                markdown_body=body.strip("\n"),
+                markdown_body=body,
                 category=str(category),
                 published=bool(meta.get("published", False)),
                 created_at=datetime.fromisoformat(str(meta["created_at"])),
@@ -290,6 +298,24 @@ class BlogStorage:
             os.remove(current_path)
         else:
             self._write_post(post, current_path)
+        return post
+
+    def append_body(self, post_id: str, data: str) -> Optional[BlogPost]:
+        """Append `data` to a post's markdown_body and persist.
+
+        Used by the chunked-upload path: the Apple IIc client streams long
+        post bodies in small pieces (the FujiNet IWM write buffer caps around
+        1 KB per request).  The title is untouched, so the slug/filename never
+        changes here.
+        """
+        path = self._find_path_by_id(post_id)
+        if path is None:
+            return None
+        post = self._read_post(path)
+        if post is None:
+            return None
+        post.update(markdown_body=(post.markdown_body + data))
+        self._write_post(post, path)
         return post
 
     def delete_post(self, post_id: str) -> bool:

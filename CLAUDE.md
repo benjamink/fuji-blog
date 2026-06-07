@@ -162,6 +162,16 @@ Write endpoints (`POST /api/posts`, `PUT /api/posts`, `PUT /api/posts/{id}`, `PA
 - **PUT** `/api/posts/{post_id}`
   - Body: `{ "title", "markdown_body", "categories", "published" }`
   - Returns: Updated post
+  - Setting `markdown_body` (typically to `""`) also resets the post's chunked-append sequence (see below).
+
+#### Append Body Chunk *(Apple IIc long-post upload)*
+- **PUT** `/api/posts/{post_id}/append`
+  - Raw text body: `"<seq>\n<chunk-data>"` — first line is a decimal sequence number starting at 0; everything after the first newline is appended verbatim to `markdown_body`.
+  - No `Content-Type` header required (FujiNet IWM workaround).
+  - **Why:** the FujiNet IWM write buffer caps a single `network_write()` near ~1 KB, so longer post bodies are streamed in ≤480-byte chunks. The client creates the post (or updates metadata) with an **empty** body, then sends the body via successive append calls.
+  - **Dedup:** the IWM firmware re-flushes each PUT body on `network_close()`, so every chunk arrives twice. The server applies a chunk only when its `seq` is exactly one past the last applied seq; duplicates (`seq <= last`) are acknowledged but ignored, and a gap returns `409`. A create or a metadata update that sets `markdown_body` resets the counter to `-1`.
+  - Client helper: `send_body_chunks()` in `client/src/main.c`. Server: `BlogStorage.append_body()` + `_append_seq` in `app/main.py`.
+  - **Note:** the `.md` storage round-trip is byte-exact (`_parse_md_file`/`_write_md_file` preserve the body verbatim) so repeated read-modify-write appends don't drift.
 
 #### Delete Post
 - **DELETE** `/api/posts/{id}` — Remove a post

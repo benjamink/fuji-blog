@@ -9,55 +9,30 @@ Output: 8192 bytes, Apple II HGR interleaved layout.
 280 x 192 pixels, 7 pixels per byte (bit 7 = 0, green-white palette).
 Dark source pixels -> lit (1); light source pixels -> dark (0).
 
-Layout (full-screen HGR):
-  Logo image scaled into the top LOGO_H scanlines, centred.
-  "FUJIBLOGGER V<ver>"  centred below the logo.
-  "PRESS ANY KEY..."    centred near the bottom.
+The logo occupies the top LOGO_H scanlines (the MIXED-mode graphics area).
+The version line and "PRESS ANY KEY..." are NOT baked in — splash_main.c
+prints them as live text in the 4 MIXED text rows at runtime, so they reflect
+the current VERSION without regenerating this image.
 """
 
 import sys
 from pathlib import Path
 
 try:
-    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+    from PIL import Image, ImageEnhance, ImageFilter
 except ImportError:
     sys.exit("Pillow required:  pip install Pillow")
 
 HR_SIZE = 8192
 HGR_W = 280
 HGR_H = 192
-LOGO_H = 130    # logo occupies the top 130 scanlines; text goes below
+LOGO_H = 156    # logo fits in the MIXED graphics area (top 160 scanlines)
 
 
 def hr_offset(y):
     """Byte offset for scanline y (0-191) in the HGR page."""
     thirds = (0, 40, 80)
     return ((y & 7) << 10) | (((y >> 3) & 7) << 7) | thirds[y >> 6]
-
-
-def build_font(size):
-    """Return a bold truetype font, falling back to PIL's default."""
-    for name in ("DejaVuSansMono-Bold.ttf", "DejaVuSans-Bold.ttf",
-                 "LiberationMono-Bold.ttf", "FreeMonoBold.ttf"):
-        for search in ("/usr/share/fonts", "/usr/local/share/fonts",
-                       str(Path.home() / ".fonts")):
-            base = Path(search)
-            if not base.is_dir():
-                continue
-            for p in base.rglob(name):
-                try:
-                    return ImageFont.truetype(str(p), size)
-                except Exception:
-                    pass
-    return ImageFont.load_default()
-
-
-def draw_centred(canvas, text, y_top, font):
-    """Draw black text horizontally centred at y_top on a white canvas."""
-    draw = ImageDraw.Draw(canvas)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    x = (HGR_W - (bbox[2] - bbox[0])) // 2
-    draw.text((x, y_top), text, fill=0, font=font)
 
 
 def png_to_hgr(src_path, version=""):
@@ -72,15 +47,17 @@ def png_to_hgr(src_path, version=""):
     canvas = Image.new("L", (HGR_W, HGR_H), 255)   # white = off in HGR
     canvas.paste(img, ((HGR_W - w) // 2, (LOGO_H - h) // 2))
 
-    # --- Sharpen + contrast the logo area, then add crisp text below ------
+    # Everything below LOGO_H stays white (-> black in HGR); the MIXED text
+    # rows render over scanlines 160-191 at runtime.
+    from PIL import ImageDraw
+    ImageDraw.Draw(canvas).rectangle(
+        [0, LOGO_H, HGR_W - 1, HGR_H - 1], fill=255)
+
+    # --- Sharpen + contrast the logo area, then dither to 1-bit -----------
     logo_area = canvas.crop((0, 0, HGR_W, LOGO_H))
     logo_area = logo_area.filter(ImageFilter.SHARPEN)
     logo_area = ImageEnhance.Contrast(logo_area).enhance(2.5)
     canvas.paste(logo_area, (0, 0))
-
-    ver_str = ("FUJIBLOGGER V" + version) if version else "FUJIBLOGGER"
-    draw_centred(canvas, ver_str,          145, build_font(13))
-    draw_centred(canvas, "PRESS ANY KEY...", 172, build_font(11))
 
     mono = canvas.convert("1", dither=Image.FLOYDSTEINBERG)
 

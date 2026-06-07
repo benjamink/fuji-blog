@@ -53,6 +53,12 @@ _PUT_DEDUP_TTL = 30          # seconds — covers any realistic firmware retry
 _put_dedup_cache: dict = {}  # fingerprint -> (post_id, expires_at)
 _delete_dedup_cache: dict = {}  # post_id -> expires_at
 
+# Chunked body upload (Apple IIc): the client streams a long markdown body in
+# small append requests, each tagged with a monotonic seq number.  We track the
+# last applied seq per post so the IWM firmware's double-flush (it re-sends every
+# PUT body on close) is deduplicated.  A create/update resets the counter to -1.
+_append_seq: dict = {}       # post_id -> last applied seq (int)
+
 
 def _summary(post) -> BlogPostSummary:
     return BlogPostSummary(
@@ -141,10 +147,12 @@ async def create_post_via_put(request: Request) -> BlogPostSummary:
         )
     title = data.get("title", "")
     markdown_body = data.get("markdown_body", "")
-    if not title or not markdown_body:
+    # markdown_body may be empty here: long posts are created with an empty body
+    # and then streamed in via /api/posts/{id}/append (see _append_seq).
+    if not title:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="title and markdown_body are required",
+            detail="title is required",
         )
 
     # Dedup: same fingerprint within TTL → return existing post
@@ -171,7 +179,52 @@ async def create_post_via_put(request: Request) -> BlogPostSummary:
         published=bool(data.get("published", False)),
     )
     _put_dedup_cache[fingerprint] = (post.id, now + _PUT_DEDUP_TTL)
+    # Start a fresh chunked-append sequence for this post.
+    _append_seq[post.id] = -1
     return _summary(post)
+
+
+@app.put("/api/posts/{post_id}/append")
+async def append_post_body(post_id: str, request: Request):
+    """Append a chunk to a post's markdown body (Apple IIc chunked upload).
+
+    Body format is raw text:  "<seq>\\n<chunk-data>"
+      - <seq> is a decimal sequence number starting at 0
+      - <chunk-data> is appended verbatim to markdown_body (may contain newlines)
+
+    The IWM firmware re-flushes each PUT body on close, so every chunk arrives
+    twice.  We apply a chunk only when its seq is exactly one past the last
+    applied seq; duplicates (seq <= last) are acknowledged but ignored.
+    No Content-Type header is required (FujiNet IWM workaround).
+    """
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    seq_str, _, data = raw.partition("\n")
+    try:
+        seq = int(seq_str.strip())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="first line must be a decimal seq number",
+        )
+
+    last = _append_seq.get(post_id, -1)
+    if seq <= last:
+        # Duplicate re-flush — already applied.  Acknowledge with current length.
+        post = storage.get_post(post_id)
+        if post is None:
+            raise HTTPException(status_code=404, detail="post not found")
+        return {"id": post.id, "len": len(post.markdown_body), "seq": last}
+    if seq != last + 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"seq gap: expected {last + 1}, got {seq}",
+        )
+
+    post = storage.append_body(post_id, data)
+    if post is None:
+        raise HTTPException(status_code=404, detail="post not found")
+    _append_seq[post_id] = seq
+    return {"id": post.id, "len": len(post.markdown_body), "seq": seq}
 
 
 @app.get("/api/categories")
@@ -289,6 +342,10 @@ async def update_post(post_id: str, request: Request) -> BlogPostSummary:
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Post {post_id} not found")
+    # An edit that sets markdown_body (typically to "" before re-streaming the
+    # body via /append) starts a fresh chunked-append sequence.
+    if data.get("markdown_body") is not None:
+        _append_seq[post_id] = -1
     return _summary(updated)
 
 

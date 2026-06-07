@@ -69,10 +69,10 @@ char server_url[256] = "http://fujiblogger.example.com";
 
 /* Shared BSS buffers — menu functions never run concurrently so one copy each
    covers all callers. Sizes chosen to keep the apple2 BSS segment within its
-   ~7 KB limit.
-   s_json_buf: 2400 bytes handles real-world Markdown with up to ~65% newline
-   density in a 1280-char body (each '\n' → 2-char escape).  The encoder in
-   api.c truncates gracefully if the limit is ever reached. */
+   limit (__HIMEM__ = $B800 minus the 2 KB stack).
+   s_json_buf: now only carries post METADATA (title/category, empty body) for
+   create/update, plus one body chunk ("SEQ\n" + up to BODY_CHUNK_SIZE bytes)
+   during the chunked upload.  600 bytes covers both comfortably. */
 static char s_spec[300];
 static char s_ids[MAX_API_POSTS][MAX_API_ID_LEN + 1];
 static char s_titles[MAX_API_POSTS][MAX_API_TITLE_LEN + 1];
@@ -80,7 +80,7 @@ static int  s_pub[MAX_API_POSTS];
 static char s_path[16];
 static char s_val[MAX_API_TITLE_LEN + 1];
 static char s_body[MAX_API_MARKDOWN_BODY_LEN + 1];
-static char s_json_buf[2048];
+static char s_json_buf[600];
 static char s_id_result[MAX_API_ID_LEN + 1];
 
 /* Month abbreviations packed as a flat string — RODATA, not BSS.
@@ -1025,6 +1025,47 @@ void view_post(const char *id)
 #endif
 }
 
+/* ── send_body_chunks ──────────────────────────────────────────
+   Stream s_body to /api/posts/{id}/append in BODY_CHUNK_SIZE pieces.
+   Each request body is "SEQ\n<chunk>"; the server appends chunks in order
+   and ignores the IWM firmware's duplicate re-flush via the seq number.
+   The post must already exist with an empty body (create, or update that
+   set markdown_body to "").  Returns 1 on success, 0 on any send failure. */
+
+#define BODY_CHUNK_SIZE 480
+
+static int send_body_chunks(const char *post_id)
+{
+    int total = (int)strlen(s_body);
+    int off   = 0;
+    int seq   = 0;
+    int n, hlen;
+    uint8_t perr;
+
+    while (off < total) {
+        n = total - off;
+        if (n > BODY_CHUNK_SIZE) n = BODY_CHUNK_SIZE;
+
+        /* Build "SEQ\n" header, then append the raw chunk bytes. */
+        hlen = snprintf(s_json_buf, sizeof(s_json_buf), "%d\n", seq);
+        memcpy(s_json_buf + hlen, s_body + off, (size_t)n);
+
+        snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/append",
+                 server_url, post_id);
+        perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
+        if (perr) return 0;
+        network_write(s_spec, (uint8_t *)s_json_buf, (uint16_t)(hlen + n));
+        perr = network_json_parse(s_spec);   /* triggers the HTTP transaction */
+        network_close(s_spec);
+        if (perr) return 0;
+
+        off += n;
+        seq++;
+        putchar('.');                        /* simple progress indicator */
+    }
+    return 1;
+}
+
 /* ── new_post ──────────────────────────────────────────────── */
 
 void new_post(void)
@@ -1060,7 +1101,9 @@ void new_post(void)
     printf("  Save as draft? (Y/N): ");
 
     if (toupper(getchar()) == 'Y') {
-        json_len = build_update_json(s_val, s_id_result, s_body,
+        /* Create the post with metadata + an EMPTY body; the body is then
+           streamed in chunks (the FujiNet IWM write buffer caps ~1 KB).     */
+        json_len = build_update_json(s_val, s_id_result, "",
                                      s_json_buf, sizeof(s_json_buf));
         if (json_len <= 0) {
             printf("\n  Error building request.\n");
@@ -1074,13 +1117,18 @@ void new_post(void)
                 printf("\n  Open error: %d\n", (int)perr);
             } else {
                 network_write(s_spec, (uint8_t *)s_json_buf, (uint16_t)json_len);
-                printf("\n  Sending to server...\n");
+                printf("\n  Creating post...\n");
                 perr = network_json_parse(s_spec);
+                /* Reuse s_id_result (was category) to hold the new post id. */
                 s_id_result[0] = '\0';
                 pn = network_json_query(s_spec, "/id", s_id_result);
                 network_close(s_spec);
                 if (pn > 0 && s_id_result[0]) {
-                    printf("  Draft saved!\n");
+                    printf("  Sending body");
+                    if (send_body_chunks(s_id_result))
+                        printf("\n  Draft saved!\n");
+                    else
+                        printf("\n  Error sending body.\n");
                 } else {
                     printf("  Server error (parse %d).\n", (int)perr);
                 }
@@ -1179,7 +1227,10 @@ void edit_post(void)
         return;
     }
 
-    json_len = build_update_json(s_val, s_id_result, s_body,
+    /* Update metadata with an EMPTY body: this clears the server-side body and
+       resets its append sequence, so we can re-stream the (possibly long) body
+       in chunks below. */
+    json_len = build_update_json(s_val, s_id_result, "",
                                  s_json_buf, sizeof(s_json_buf));
     if (json_len <= 0) {
         printf("\n  Error building request.\n");
@@ -1192,13 +1243,16 @@ void edit_post(void)
             printf("\n  Open error: %d\n", (int)perr);
         } else {
             network_write(s_spec, (uint8_t *)s_json_buf, (uint16_t)json_len);
-            printf("\n  Saving...\n");
+            printf("\n  Saving");
             perr = network_json_parse(s_spec);
             s_id_result[0] = '\0';
             pn = network_json_query(s_spec, "/id", s_id_result);
             network_close(s_spec);
             if (pn > 0 && s_id_result[0]) {
-                printf("  Saved!\n");
+                if (send_body_chunks(s_ids[sel]))
+                    printf("\n  Saved!\n");
+                else
+                    printf("\n  Error sending body.\n");
             } else {
                 printf("  Server error (parse %d).\n", (int)perr);
             }
