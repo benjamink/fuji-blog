@@ -151,59 +151,72 @@ static void wait_key(void)
     getchar();
 }
 
-/* Fetch the raw Markdown body for post `id` into s_body via the plain-text
-   /api/posts/{id}/body endpoint.
+/* Fetch the raw Markdown body for post `id` into s_body.
 
-   network_json_query() is limited to 512 bytes per field by the IWM firmware.
-   network_read() has no such per-field limit but is bounded by one SmartPort
-   block (~512 bytes) per call.  We therefore poll with network_status() and
-   loop until the firmware reports no more bytes available.
+   The IWM firmware caps a single HTTP GET *response* near ~1 KB, so a long
+   body cannot be retrieved in one request.  We therefore pull it in slices via
+   /api/posts/{id}/body?offset=N&len=M and concatenate, stopping when a slice
+   returns fewer bytes than requested (end of body).  Within each slice we read
+   in SmartPort blocks (network_read returns ~512 bytes per call).
 
-   Returns the number of bytes stored in s_body (0 on error). */
+   Returns the number of bytes stored in s_body (0 on error/empty). */
+#define BODY_FETCH_CHUNK 480
+
 static int fetch_body(const char *id)
 {
     int16_t n;
     uint8_t perr;
     uint16_t bw;
     uint8_t conn, nerr;
-    int retries, offset, to_read;
+    int retries, total, got, want, to_read;
 
-    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/body",
-             server_url, id);
-    perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
-    if (perr) {
-        screen_error("Body fetch error", (int)perr);
-        s_body[0] = '\0';
-        return 0;
-    }
+    total = 0;
+    for (;;) {
+        if (total >= MAX_API_MARKDOWN_BODY_LEN) break;
+        want = MAX_API_MARKDOWN_BODY_LEN - total;
+        if (want > BODY_FETCH_CHUNK) want = BODY_FETCH_CHUNK;
 
-    /* Wait for the HTTP response to start arriving. */
-    bw = 0; conn = 1; nerr = 0;
-    retries = 100;
-    while (bw == 0 && conn != 0 && retries > 0) {
-        network_status(s_spec, &bw, &conn, &nerr);
-        retries--;
-    }
+        snprintf(s_spec, sizeof(s_spec),
+                 "N1:%s/api/posts/%s/body?offset=%d&len=%d",
+                 server_url, id, total, want);
+        perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+        if (perr) {
+            if (total == 0) {
+                screen_error("Body fetch error", (int)perr);
+                s_body[0] = '\0';
+                return 0;
+            }
+            break;   /* keep what we already fetched */
+        }
 
-    /* Read in 512-byte SmartPort chunks until the buffer is full or
-       the firmware reports no more bytes available. */
-    offset = 0;
-    while (bw > 0 && offset < MAX_API_MARKDOWN_BODY_LEN) {
-        to_read = (int)bw;
-        if (to_read > MAX_API_MARKDOWN_BODY_LEN - offset)
-            to_read = MAX_API_MARKDOWN_BODY_LEN - offset;
-        n = network_read(s_spec, (uint8_t *)s_body + offset,
-                         (uint16_t)to_read);
-        if (n <= 0) break;
-        offset += (int)n;
-        /* Check whether more bytes arrived while we were processing. */
+        /* Wait for the slice's response to start arriving. */
         bw = 0; conn = 1; nerr = 0;
-        network_status(s_spec, &bw, &conn, &nerr);
+        retries = 100;
+        while (bw == 0 && conn != 0 && retries > 0) {
+            network_status(s_spec, &bw, &conn, &nerr);
+            retries--;
+        }
+
+        /* Read this slice in SmartPort blocks. */
+        got = 0;
+        while (bw > 0 && got < want) {
+            to_read = (int)bw;
+            if (to_read > want - got) to_read = want - got;
+            n = network_read(s_spec, (uint8_t *)s_body + total + got,
+                             (uint16_t)to_read);
+            if (n <= 0) break;
+            got += (int)n;
+            bw = 0; conn = 1; nerr = 0;
+            network_status(s_spec, &bw, &conn, &nerr);
+        }
+        network_close(s_spec);
+
+        total += got;
+        if (got < want) break;   /* short slice => end of body */
     }
 
-    network_close(s_spec);
-    s_body[offset] = '\0';
-    return offset;
+    s_body[total] = '\0';
+    return total;
 }
 
 /* Fetch /api/posts/summaries (with optional suffix, e.g. "?published_only=true")

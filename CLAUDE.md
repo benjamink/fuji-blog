@@ -173,6 +173,11 @@ Write endpoints (`POST /api/posts`, `PUT /api/posts`, `PUT /api/posts/{id}`, `PA
   - Client helper: `send_body_chunks()` in `client/src/main.c`. Server: `BlogStorage.append_body()` + `_append_seq` in `app/main.py`.
   - **Note:** the `.md` storage round-trip is byte-exact (`_parse_md_file`/`_write_md_file` preserve the body verbatim) so repeated read-modify-write appends don't drift.
 
+#### Fetch Body Slice *(Apple IIc long-post download)*
+- **GET** `/api/posts/{post_id}/body?offset=N&len=M`
+  - Returns `markdown_body[N : N+M]` as `text/plain`. Omit both params (or `len=0`) to get the whole body (web / large-buffer clients).
+  - **Why:** the IWM HTTP *receive* buffer caps a single GET response near ~1 KB — the read-side mirror of the write limit. When editing, the client (`fetch_body()` in `client/src/main.c`) pulls the body in ≤480-byte slices, advancing `offset` until a slice returns fewer than `len` bytes (end of body). Without this, editing a long post would silently load only the first ~1 KB.
+
 #### Delete Post
 - **DELETE** `/api/posts/{id}` — Remove a post
 

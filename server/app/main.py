@@ -295,13 +295,24 @@ def get_post_markdown(post_id: str) -> BlogPostMarkdown:
 
 
 @app.get("/api/posts/{post_id}/body")
-def get_post_body(post_id: str) -> Response:
+def get_post_body(
+    post_id: str,
+    offset: int = Query(default=0, ge=0),
+    length: int = Query(default=0, ge=0, alias="len"),
+) -> Response:
     """Return the raw Markdown body as plain text.
 
     The FujiNet IWM firmware caps network_json_query() results at 512 bytes,
     so long bodies are silently truncated when fetched via the /markdown JSON
     endpoint.  This endpoint returns the body as plain text so the client can
-    use network_read() instead, which has no per-field length limit.
+    use network_read() instead.
+
+    For long bodies the IWM HTTP *receive* buffer also caps a single GET
+    response (~1 KB), so the Apple IIc client fetches the body in slices:
+      ?offset=N&len=M  returns markdown_body[N : N+M]
+    Omitting both (or len=0) returns the whole body (web / large-buffer
+    clients).  The client keeps requesting slices until it receives fewer than
+    `len` bytes, which marks end-of-body.
     """
     post = storage.get_post(post_id)
     if not post:
@@ -309,8 +320,13 @@ def get_post_body(post_id: str) -> Response:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Post {post_id} not found",
         )
+    body = post.markdown_body
+    if length > 0:
+        body = body[offset:offset + length]
+    elif offset > 0:
+        body = body[offset:]
     return Response(
-        content=post.markdown_body,
+        content=body,
         media_type="text/plain; charset=utf-8",
     )
 
