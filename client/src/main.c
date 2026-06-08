@@ -17,7 +17,8 @@
    *count to the actual stored byte count via that prefix. */
 #define APPKEY_CREATOR  0xBEE5
 #define APPKEY_APP      0x01
-#define APPKEY_KEY_URL  0x00
+#define APPKEY_KEY_URL     0x00
+#define APPKEY_KEY_APIKEY  0x01  /* slot 1: pre-shared admin key (?key=) */
 
 #define MAX_TITLE_LEN 80
 #define MAX_CATEGORY_LEN 64
@@ -66,6 +67,11 @@ int  editor_insert_line(char *body, int body_max, int n, const char *text);
 /* Global variables */
 int screen_width = 40;  /* Detect 40 or 80 column mode */
 char server_url[256] = "http://fujiblogger.example.com";
+/* Pre-shared admin key sent as ?key= on write requests.  The IWM firmware
+   cannot send custom request headers, so an Authorization: Bearer token is
+   impossible (see CLAUDE.md); the server accepts ?key=<API_KEY> instead.
+   Stored in appkey slot APPKEY_KEY_APIKEY; capped at MAX_APPKEY_LEN (64). */
+char api_key[80] = "";
 
 /* Shared BSS buffers — menu functions never run concurrently so one copy each
    covers all callers. Sizes chosen to keep the apple2 BSS segment within its
@@ -73,15 +79,29 @@ char server_url[256] = "http://fujiblogger.example.com";
    s_json_buf: now only carries post METADATA (title/category, empty body) for
    create/update, plus one body chunk ("SEQ\n" + up to BODY_CHUNK_SIZE bytes)
    during the chunked upload.  600 bytes covers both comfortably. */
-static char s_spec[300];
+static char s_spec[304];
 static char s_ids[MAX_API_POSTS][MAX_API_ID_LEN + 1];
 static char s_titles[MAX_API_POSTS][MAX_API_TITLE_LEN + 1];
 static int  s_pub[MAX_API_POSTS];
 static char s_path[16];
 static char s_val[MAX_API_TITLE_LEN + 1];
 static char s_body[MAX_API_MARKDOWN_BODY_LEN + 1];
-static char s_json_buf[600];
+static char s_json_buf[512];  /* >= BODY_CHUNK_SIZE(480) + "SEQ\n"; also fits metadata JSON */
 static char s_id_result[MAX_API_ID_LEN + 1];
+
+/* Build the ?key= / &key= query fragment for admin (write) requests.
+   The IWM firmware can't send an Authorization header, so the pre-shared key
+   rides in the query string instead (see CLAUDE.md).  Pass has_query=1 when the
+   URL already contains a '?' so we emit '&key=' rather than '?key='.  Returns
+   "" when no key is configured (so the request goes out unchanged). */
+static const char *key_suffix(int has_query)
+{
+    static char buf[92];
+    if (api_key[0] == '\0')
+        return "";
+    snprintf(buf, sizeof(buf), "%ckey=%s", has_query ? '&' : '?', api_key);
+    return buf;
+}
 
 /* Month abbreviations packed as a flat string — RODATA, not BSS.
    Access month i with: %.3s applied to (s_months_str + i*3)            */
@@ -231,7 +251,8 @@ static int fetch_post_list(const char *suffix)
 
     count = 0;
     snprintf(s_spec, sizeof(s_spec),
-             "N1:%s/api/posts/summaries%s", server_url, suffix);
+             "N1:%s/api/posts/summaries%s%s", server_url, suffix,
+             key_suffix(strchr(suffix, '?') != NULL));
     perr = network_open(s_spec, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
     if (perr) {
         screen_error("Connection error", (int)perr);
@@ -866,7 +887,8 @@ void test_server(void)
             ui_header("SERVER TEST", "PUT /api/posts");
             ui_hline();
             printf("\n  Sending PUT /api/posts...\n\n");
-            snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts", server_url);
+            snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts%s",
+                     server_url, key_suffix(0));
             perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
             if (perr) {
                 printf("  Open error: %d\n", (int)perr);
@@ -1063,8 +1085,8 @@ static int send_body_chunks(const char *post_id)
         hlen = snprintf(s_json_buf, sizeof(s_json_buf), "%d\n", seq);
         memcpy(s_json_buf + hlen, s_body + off, (size_t)n);
 
-        snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/append",
-                 server_url, post_id);
+        snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/append%s",
+                 server_url, post_id, key_suffix(0));
         perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
         if (perr) return 0;
         network_write(s_spec, (uint8_t *)s_json_buf, (uint16_t)(hlen + n));
@@ -1121,7 +1143,8 @@ void new_post(void)
         if (json_len <= 0) {
             printf("\n  Error building request.\n");
         } else {
-            snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts", server_url);
+            snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts%s",
+                     server_url, key_suffix(0));
             /* Apple IIc IWM firmware bug: network_http_set_channel_mode() always
                delivers mode 0, so POST body writes are silently discarded.
                PUT mode in DATA mode (mode 0) correctly stores writes to postData. */
@@ -1248,8 +1271,8 @@ void edit_post(void)
     if (json_len <= 0) {
         printf("\n  Error building request.\n");
     } else {
-        snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s",
-                 server_url, s_ids[sel]);
+        snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s%s",
+                 server_url, s_ids[sel], key_suffix(0));
         /* Same PUT + network_write workaround as new_post */
         perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
         if (perr) {
@@ -1323,8 +1346,8 @@ void toggle_publish(void)
 
     snprintf(s_val, sizeof(s_val), "{\"published\":%s}",
              new_pub ? "true" : "false");
-    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/publish",
-             server_url, s_ids[sel]);
+    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/publish%s",
+             server_url, s_ids[sel], key_suffix(0));
 
     perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
     if (perr) {
@@ -1393,8 +1416,8 @@ void delete_post(void)
        established workaround is OPEN_MODE_HTTP_PUT + network_write().
        The server PUT /api/posts/{id}/delete performs the deletion and
        returns {"id":"<uuid>"} so we can confirm success. */
-    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/delete",
-             server_url, s_ids[sel]);
+    snprintf(s_spec, sizeof(s_spec), "N1:%s/api/posts/%s/delete%s",
+             server_url, s_ids[sel], key_suffix(0));
     perr = network_open(s_spec, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
     if (perr) {
         printf("\n  Open error: %d\n", (int)perr);
@@ -2134,27 +2157,69 @@ void show_stats(void)
 static void appkey_load(void)
 {
     static uint8_t buf[MAX_APPKEY_LEN + 2]; /* 66: 2-byte length + 64 data */
-    uint16_t count = 0;
+    uint16_t count;
 
     fuji_set_appkey_details(APPKEY_CREATOR, APPKEY_APP, DEFAULT);
+
+    /* Slot 0: server URL */
+    count = 0;
     buf[0] = '\0';
-    if (!fuji_read_appkey(APPKEY_KEY_URL, &count, buf)) return;
-    if (count == 0 || buf[0] == '\0') return;
-    if (count >= MAX_APPKEY_LEN) count = MAX_APPKEY_LEN - 1;
-    buf[count] = '\0';
-    strncpy(server_url, (char *)buf, sizeof(server_url) - 1);
-    server_url[sizeof(server_url) - 1] = '\0';
+    if (fuji_read_appkey(APPKEY_KEY_URL, &count, buf) &&
+        count != 0 && buf[0] != '\0') {
+        if (count >= MAX_APPKEY_LEN) count = MAX_APPKEY_LEN - 1;
+        buf[count] = '\0';
+        strncpy(server_url, (char *)buf, sizeof(server_url) - 1);
+        server_url[sizeof(server_url) - 1] = '\0';
+    }
+
+    /* Slot 1: pre-shared admin key */
+    count = 0;
+    buf[0] = '\0';
+    if (fuji_read_appkey(APPKEY_KEY_APIKEY, &count, buf) &&
+        count != 0 && buf[0] != '\0') {
+        if (count >= MAX_APPKEY_LEN) count = MAX_APPKEY_LEN - 1;
+        buf[count] = '\0';
+        strncpy(api_key, (char *)buf, sizeof(api_key) - 1);
+        api_key[sizeof(api_key) - 1] = '\0';
+    }
 }
 
 static void appkey_save(void)
 {
-    uint16_t len = (uint16_t)strlen(server_url);
-    if (len >= MAX_APPKEY_LEN) len = MAX_APPKEY_LEN - 1;
+    uint16_t len;
     fuji_set_appkey_details(APPKEY_CREATOR, APPKEY_APP, DEFAULT);
+
+    len = (uint16_t)strlen(server_url);
+    if (len >= MAX_APPKEY_LEN) len = MAX_APPKEY_LEN - 1;
     fuji_write_appkey(APPKEY_KEY_URL, len, (uint8_t *)server_url);
+
+    len = (uint16_t)strlen(api_key);
+    if (len >= MAX_APPKEY_LEN) len = MAX_APPKEY_LEN - 1;
+    fuji_write_appkey(APPKEY_KEY_APIKEY, len, (uint8_t *)api_key);
 }
 
 /* ── show_config ───────────────────────────────────────────── */
+
+/* Prompt the user to replace a single text setting (URL or API key) and
+   persist both settings to the App Key immediately on entry.
+   Shared by both Configuration fields to keep the code footprint small. */
+static void edit_text_field(const char *title, char *dst, int dstsize)
+{
+    HOME();
+    ui_header(title, "Esc: Cancel");
+    ui_hline();
+    printf("\n  Current:\n    %s\n\n", dst[0] ? dst : "(none)");
+    ui_hline();
+    printf("  New value: ");
+    s_val[0] = '\0';
+    if (read_line(s_val, (int)sizeof(s_val)) && s_val[0] != '\0') {
+        strncpy(dst, s_val, (size_t)dstsize - 1);
+        dst[dstsize - 1] = '\0';
+        appkey_save();   /* auto-save URL + key to App Key on entry */
+        printf("\n  Saved.\n\n");
+        wait_key();
+    }
+}
 
 void show_config(void)
 {
@@ -2168,10 +2233,10 @@ void show_config(void)
 #ifdef __CC65__
         {
             /* CC65 path: draw ALL items via gotoxy — no printf for items.
-               Items at rows 3-5, URL info at row 7, hline at row 9.     */
+               Items at rows 3-5, info at rows 7-8, hline at row 10.     */
             static const char *const cfg_labels[3] = {
                 "1.  Server URL",
-                "2.  Save URL to App Key",
+                "2.  API Key",
                 "Q.  Back"
             };
             static const char cfg_keys[3] = { '1', '2', 'Q' };
@@ -2179,12 +2244,14 @@ void show_config(void)
             uint8_t ind  = (cols >= 80) ? 20 : 4;
             int sel = 0, done = 0, ch_in, k;
 
-            /* URL info at row 7 (items 3-5, blank 6) */
+            /* URL / key info at rows 7-8 (items 3-5, blank 6) */
             gotoxy(0, 7);
-            printf("      %s\n", server_url);
+            printf("      URL: %s\n", server_url);
+            printf("      Key: %s\n",
+                   api_key[0] ? "(configured)" : "(none)");
 
-            /* Footer at row 9 */
-            gotoxy(0, 9);
+            /* Footer at row 10 */
+            gotoxy(0, 10);
             ui_hline();
             cputs("  Arrow keys / Return, or 1-2 / Q");
 
@@ -2197,9 +2264,10 @@ void show_config(void)
         /* Non-CC65: plain printf menu */
         printf("\n");
         ui_indent(); printf("1.  Server URL\n");
-        ui_indent(); printf("2.  Save URL to App Key\n");
+        ui_indent(); printf("2.  API Key\n");
         ui_indent(); printf("Q.  Back\n");
-        printf("\n      %s\n\n", server_url);
+        printf("\n      URL: %s\n", server_url);
+        printf("      Key: %s\n\n", api_key[0] ? "(configured)" : "(none)");
         ui_hline();
         printf("  Q: Back   Select: ");
         choice = toupper(getchar());
@@ -2208,23 +2276,9 @@ void show_config(void)
         if (choice == 'Q') break;
 
         if (choice == '1') {
-            HOME();
-            ui_header("SERVER URL", "Esc: Cancel");
-            ui_hline();
-            printf("\n  Current:\n    %s\n\n", server_url);
-            ui_hline();
-            printf("  New URL: ");
-            s_val[0] = '\0';
-            if (read_line(s_val, (int)sizeof(s_val)) && s_val[0] != '\0') {
-                strncpy(server_url, s_val, sizeof(server_url) - 1);
-                server_url[sizeof(server_url) - 1] = '\0';
-                printf("\n  URL updated.\n\n");
-                wait_key();
-            }
+            edit_text_field("SERVER URL", server_url, sizeof(server_url));
         } else if (choice == '2') {
-            appkey_save();
-            printf("\n  URL saved to App Key.\n\n");
-            wait_key();
+            edit_text_field("API KEY", api_key, sizeof(api_key));
         }
     }
 }

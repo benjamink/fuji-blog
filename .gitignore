@@ -36,6 +36,10 @@ server/data/posts/
 server/data/posts.json
 server/data/posts.json.migrated
 
+# Secrets — runtime credential files, never commit
+server/data/.apikey
+server/data/.htpasswd
+
 # =============================================================
 # Environment / secrets
 # =============================================================

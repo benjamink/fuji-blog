@@ -43,6 +43,11 @@ export interface UpdatePostRequest {
   published?: boolean
 }
 
+export interface ApiKeyInfo {
+  api_key: string
+  source: 'file' | 'env' | 'none'
+}
+
 const api = axios.create({
   baseURL: API_BASE,
 })
@@ -135,6 +140,18 @@ export const blogAPI = {
   // Blog statistics
   async getStats(): Promise<BlogStats> {
     const { data } = await api.get('/stats')
+    return data
+  },
+
+  // Apple IIc client API key — read current
+  async getApiKey(): Promise<ApiKeyInfo> {
+    const { data } = await api.get('/auth/apikey')
+    return data
+  },
+
+  // Apple IIc client API key — generate/rotate
+  async generateApiKey(): Promise<ApiKeyInfo> {
+    const { data } = await api.post('/auth/apikey/generate')
     return data
   },
 }

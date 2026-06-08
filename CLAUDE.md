@@ -55,11 +55,19 @@ fujiblogger/   (repo: fuji-blog)
 
 2. **Run the FastAPI server**:
    ```bash
+   # Generate a stable JWT secret and an Apple IIc client key once, then export
+   # them so admin sessions and the client key survive restarts:
+   export JWT_SECRET=$(python -c "import secrets;print(secrets.token_hex(32))")
+   export API_KEY=$(python -c "import secrets;print(secrets.token_hex(5))")  # 10 chars, easy to type
    uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
    - API endpoints: `http://localhost:8000/api/*`
    - Admin UI: `http://localhost:8000/` (serves React frontend after build)
    - Swagger docs: `http://localhost:8000/docs`
+   - **Auth:** admin endpoints require either a Bearer JWT (web admin, via
+     `/api/auth/login`) or the pre-shared `API_KEY` as a `?key=` query param
+     (Apple IIc client). See [Authentication](#authentication) below. If
+     `API_KEY` is unset, query-key auth is disabled (web JWT only).
 
 3. **Build and serve the React frontend**:
    ```bash
@@ -97,9 +105,7 @@ Each post is stored as `server/data/posts/{slug}.md` — the filename is the URL
 id: 80f7e5e7-e73c-495e-9b92-620d049d4e3d
 title: My First Post
 slug: my-first-post
-categories:
-- tech
-- apple2
+category: tech
 published: false
 created_at: '2026-05-22T12:00:00.000000'
 updated_at: '2026-05-22T12:00:00.000000'
@@ -133,7 +139,7 @@ The JSON shape returned by the API (fields sent/received over HTTP):
   "slug": "post-title-auto-generated",
   "markdown_body": "# Heading\n\nContent...",
   "html_body": "<h1>Heading</h1><p>Content...</p>",
-  "categories": ["category1", "category2"],
+  "category": "category-name",
   "published": false,
   "created_at": "2026-05-22T12:00:00",
   "updated_at": "2026-05-22T12:00:00"
@@ -153,14 +159,14 @@ Write endpoints (`POST /api/posts`, `PUT /api/posts`, `PUT /api/posts/{id}`, `PA
 
 #### Create Post
 - **POST** `/api/posts`
-  - Body: `{ "title", "markdown_body", "categories", "published" }`
+  - Body: `{ "title", "markdown_body", "category", "published" }`
   - Returns: `BlogPostSummary` (compact — no `markdown_body` or `html_body`; kept small for FujiNet receive buffer)
 - **PUT** `/api/posts` *(FujiNet Apple IIc workaround — see Platform Notes below)*
   - Same fields and response as POST; accepts raw JSON body without requiring `Content-Type: application/json`
 
 #### Update Post
 - **PUT** `/api/posts/{post_id}`
-  - Body: `{ "title", "markdown_body", "categories", "published" }`
+  - Body: `{ "title", "markdown_body", "category", "published" }`
   - Returns: Updated post
   - Setting `markdown_body` (typically to `""`) also resets the post's chunked-append sequence (see below).
 
@@ -189,6 +195,66 @@ Write endpoints (`POST /api/posts`, `PUT /api/posts`, `PUT /api/posts/{id}`, `PA
 - **POST** `/api/render`
   - Body: `{ "markdown_body": "..." }`
   - Returns: `{ "html": "..." }`
+
+## Authentication
+
+Administering posts (create / update / delete / publish / append, and the
+draft-inclusive `GET /api/posts/summaries` and `GET /api/posts` lists) requires
+authentication. Public read endpoints stay open: `/api/posts/published`,
+`/api/posts/slug/{slug}`, `/api/posts/{id}/markdown`, `/api/posts/{id}/body`,
+`/api/categories`, `/api/stats`, `/api/render`, `/api/ping`.
+
+Two credentials are accepted on protected endpoints (see
+`require_admin_or_key` in `app/auth.py`):
+
+1. **Bearer JWT** — the React admin UI logs in at `POST /api/auth/login`
+   (htpasswd-backed) and sends `Authorization: Bearer <token>`.
+2. **Pre-shared key** — the Apple IIc client appends `?key=<API_KEY>` to the
+   request URL.
+
+### Why the client can't use a Bearer token
+
+The Apple IIc IWM firmware cannot send custom request headers (see Platform
+Notes — `network_http_add_header()` is silently broken). An
+`Authorization: Bearer` header is therefore impossible. The client instead
+sends the key in the query string, which the firmware *does* transmit. The
+server's `_bearer = HTTPBearer(auto_error=False)` so a missing header falls
+through to the `?key=` check instead of 401-ing early.
+
+### Configuring the key
+
+Two ways to set the active key (a generated key takes precedence over the env
+var, so it can be rotated without a restart):
+
+- **Web admin (recommended):** log in and open the **API Key** tab. It shows the
+  active key and a **Generate** button (`ApiKeyPanel.tsx`). Generating calls
+  `POST /api/auth/apikey/generate` (Bearer-JWT only), which writes a 10-char key
+  to `API_KEY_PATH` (default `data/.apikey`) and returns it to copy.
+  `GET /api/auth/apikey` returns the current key and its `source`
+  (`file` / `env` / `none`).
+- **Env var:** set `API_KEY` to a random secret
+  (`python -c "import secrets;print(secrets.token_hex(5))"`, 10 chars). If
+  neither a generated file nor `API_KEY` is set, query-key auth is disabled
+  (Bearer JWTs only).
+
+Generated keys are **10 hex chars (40 bits)** — deliberately short so they're
+easy to type by hand on the Apple IIc. That's a trusted-LAN convenience, not a
+high-security credential; pair with HTTPS and don't expose the server publicly.
+**Max key length is 63 characters** — the FujiNet App Key store caps a slot at
+64 bytes and the client reserves one for the trailing NUL, so a hand-set key
+must stay ≤ 63 chars.
+
+- **Client:** enter the key in **Configuration → 2. API Key**. It is saved to
+  the FujiNet App Key automatically on entry (no separate save step) — stored in
+  slot `APPKEY_KEY_APIKEY` (0x01) alongside the server URL (slot 0x00, also
+  auto-saved on edit) and reloaded at startup. `key_suffix()` in `main.c`
+  appends it to every admin request.
+
+### Caveat — keys in URLs
+
+Query-string secrets can appear in HTTP server access logs and proxy logs.
+This is acceptable for a hobby tool on a trusted LAN; pair it with HTTPS where
+possible. The web admin avoids this by using the `Authorization` header.
 
 ## Client Features
 
@@ -264,8 +330,11 @@ Keep server responses small. FujiNet's receive buffer is limited. Write endpoint
 ### Diagnostics
 
 The client's **Network Status → T (Test Server)** menu provides:
-- **G:** GET `/api/ping` — confirms basic TCP connectivity
-- **P:** PUT `/api/posts` with a minimal test payload — confirms the full write path end-to-end
+- **G:** GET `/api/ping` — confirms basic TCP connectivity (public, no key)
+- **P:** PUT `/api/posts` with a minimal test payload — confirms the full write
+  path end-to-end. This now sends `?key=<API_KEY>`, so a **401 here means the
+  API key is missing or wrong** (set it in Configuration → API Key), distinct
+  from a transport failure.
 
 Always test G before P to isolate network vs. write-path failures. Check the FujiNet serial console log for `special_set_channel_mode()` and `http_transaction()` lines when debugging.
 
@@ -292,29 +361,49 @@ Always test G before P to isolate network vs. write-path failures. Check the Fuj
   - `DATA_DIR`: Path to store `posts/*.md` files (default: `server/data`)
   - `HOST`: Server host (default: `0.0.0.0`)
   - `PORT`: Server port (default: `8000`)
+  - `API_KEY`: Pre-shared admin key for the Apple IIc client (`?key=`). Unset
+    disables query-key auth. ≤ 63 chars (see [Authentication](#authentication)).
+    A key generated from the web admin (stored at `API_KEY_PATH`) overrides this.
+  - `API_KEY_PATH`: Where a web-admin-generated client key is persisted
+    (default: `data/.apikey`).
+  - `JWT_SECRET`: HMAC secret for web-admin session tokens. Unset → a random
+    key is generated each startup (sessions drop on restart). Set a stable hex
+    string for persistent logins.
+  - `JWT_EXPIRE_HOURS`: Web session lifetime (default: 24).
+  - `HTPASSWD_PATH`: htpasswd file for web-admin credentials
+    (default: `data/.htpasswd`; set via `uv run python scripts/set_password.py`).
 
 - **Client**:
-  - Set server URL and FujiNet device configuration in the client UI menu or hardcoded constants
+  - Set server URL and the admin API key in **Configuration** (menu item 8);
+    both persist to FujiNet App Key storage.
 
 ## Testing
 
 ### Server
 ```bash
-# Start server in dev mode with auto-reload
+# Start server in dev mode with auto-reload (set API_KEY to exercise the
+# client auth path; JWT_SECRET keeps web sessions stable across reloads)
 cd server
-uv run uvicorn app.main:app --reload
+API_KEY=devkey JWT_SECRET=devsecret uv run uvicorn app.main:app --reload
 
-# In another terminal, test endpoints
-curl http://localhost:8000/api/posts
+# Public read — no auth
+curl http://localhost:8000/api/posts/published
 
-# Standard POST (from web / React frontend)
-curl -X POST http://localhost:8000/api/posts \
+# Admin list WITHOUT a key → 401
+curl -i http://localhost:8000/api/posts/summaries
+
+# FujiNet-compatible PUT create with the pre-shared key (no Content-Type
+# header required) → 201
+curl -X PUT "http://localhost:8000/api/posts?key=devkey" \
+  -d '{"title":"Test","markdown_body":"# Test","category":"","published":false}'
+
+# Same create via the web path: Bearer JWT from /api/auth/login
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"title":"Test","markdown_body":"# Test","categories":[],"published":false}'
-
-# FujiNet-compatible PUT create (no Content-Type header required)
-curl -X PUT http://localhost:8000/api/posts \
-  -d '{"title":"Test","markdown_body":"# Test","categories":[],"published":false}'
+  -d '{"username":"admin","password":"<pw>"}' | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+curl -X POST http://localhost:8000/api/posts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Test","markdown_body":"# Test","category":"","published":false}'
 ```
 
 ### Client
@@ -345,6 +434,7 @@ curl -X PUT http://localhost:8000/api/posts \
 - Check the FujiNet serial console. If you see `special_set_channel_mode(0)` for every mode change and `http_transaction() done, resultCode=-1, fileSize=0`, the IWM firmware channel-mode bug is active (see Platform Notes above). The client already works around this using `OPEN_MODE_HTTP_PUT` + `network_write()`.
 - If you see nothing in the **server** logs when a write is attempted, the TCP connection is not reaching the server — check the URL, port, and firewall.
 - Response size matters: if `network_json_parse()` returns an error but the server logs show a 200/201, the response JSON may be too large for FujiNet's buffer. Ensure write endpoints return `BlogPostSummary` not `BlogPostResponse`.
+- **401 in the server logs** (or empty post lists): the API key is missing or wrong. Set it in **Configuration → API Key** on the client and ensure the server's `API_KEY` env var matches (≤ 63 chars). With no key configured, even listing posts returns 401 because `/api/posts/summaries` requires auth. See [Authentication](#authentication).
 
 ### "Relocation/Configuration Error" on Apple IIc boot
 - ProDOS filenames are limited to 15 characters and only allow A–Z, 0–9, and period.

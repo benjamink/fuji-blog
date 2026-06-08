@@ -7,8 +7,16 @@ from fastapi.staticfiles import StaticFiles
 import json
 from pathlib import Path
 
-from .auth import create_access_token, require_admin, verify_password
+from .auth import (
+    create_access_token,
+    generate_api_key,
+    get_active_api_key,
+    require_admin,
+    require_admin_or_key,
+    verify_password,
+)
 from .schemas import (
+    ApiKeyResponse,
     BlogPostCreate,
     BlogPostPublish,
     BlogPostResponse,
@@ -103,6 +111,26 @@ def login(req: LoginRequest) -> TokenResponse:
     return TokenResponse(access_token=create_access_token(req.username))
 
 
+@app.get("/api/auth/apikey", response_model=ApiKeyResponse)
+def read_api_key(_: str = Depends(require_admin)) -> ApiKeyResponse:
+    """Return the Apple IIc client's current API key (web admin only).
+
+    Bearer-JWT protected — the client never needs this endpoint.
+    """
+    key, source = get_active_api_key()
+    return ApiKeyResponse(api_key=key, source=source)
+
+
+@app.post("/api/auth/apikey/generate", response_model=ApiKeyResponse)
+def rotate_api_key(_: str = Depends(require_admin)) -> ApiKeyResponse:
+    """Generate and persist a new client API key, returning it (web admin only).
+
+    Replaces any previously generated key.  Existing clients must be updated
+    with the new key.
+    """
+    return ApiKeyResponse(api_key=generate_api_key(), source="file")
+
+
 # ============================================================================
 # BLOG POST ENDPOINTS
 # ============================================================================
@@ -127,7 +155,10 @@ def create_post(
 
 
 @app.put("/api/posts", response_model=BlogPostSummary, status_code=status.HTTP_201_CREATED)
-async def create_post_via_put(request: Request) -> BlogPostSummary:
+async def create_post_via_put(
+    request: Request,
+    _: str = Depends(require_admin_or_key),
+) -> BlogPostSummary:
     """Create a post via PUT — workaround for Apple IIc FujiNet IWM firmware bug where
     HTTP_CHAN_MODE_POST_SET_DATA is never applied, so POST body writes are discarded.
     PUT method writes in DATA mode (mode 0) correctly land in postData.
@@ -185,7 +216,11 @@ async def create_post_via_put(request: Request) -> BlogPostSummary:
 
 
 @app.put("/api/posts/{post_id}/append")
-async def append_post_body(post_id: str, request: Request):
+async def append_post_body(
+    post_id: str,
+    request: Request,
+    _: str = Depends(require_admin_or_key),
+):
     """Append a chunk to a post's markdown body (Apple IIc chunked upload).
 
     Body format is raw text:  "<seq>\\n<chunk-data>"
@@ -254,8 +289,11 @@ def list_posts(
 def list_post_summaries(
     published_only: bool = False,
     category: str = Query(default=None, description="Filter by category name"),
+    _: str = Depends(require_admin_or_key),
 ) -> list[BlogPostSummary]:
-    """Compact post list without body fields. Sized for FujiNet's receive buffer."""
+    """Compact post list without body fields. Sized for FujiNet's receive buffer.
+
+    Includes drafts, so it requires admin auth (Bearer JWT or ?key=)."""
     return [
         _summary(p)
         for p in storage.list_posts(published_only=published_only, category=category)
@@ -341,7 +379,11 @@ def get_post(post_id: str) -> BlogPostResponse:
 
 
 @app.put("/api/posts/{post_id}", response_model=BlogPostSummary)
-async def update_post(post_id: str, request: Request) -> BlogPostSummary:
+async def update_post(
+    post_id: str,
+    request: Request,
+    _: str = Depends(require_admin_or_key),
+) -> BlogPostSummary:
     """Update a blog post. Accepts raw JSON body without requiring Content-Type header
     so the FujiNet IWM client can use OPEN_MODE_HTTP_PUT + network_write()."""
     body = await request.body()
@@ -379,7 +421,11 @@ def toggle_publish(
 
 
 @app.put("/api/posts/{post_id}/publish", response_model=BlogPostSummary)
-async def toggle_publish_via_put(post_id: str, request: Request) -> BlogPostSummary:
+async def toggle_publish_via_put(
+    post_id: str,
+    request: Request,
+    _: str = Depends(require_admin_or_key),
+) -> BlogPostSummary:
     """Toggle publish via PUT — FujiNet IWM workaround (mirrors PATCH endpoint).
     Accepts raw JSON body without requiring Content-Type header."""
     body = await request.body()
@@ -407,7 +453,10 @@ def delete_post(
 
 
 @app.put("/api/posts/{post_id}/delete")
-async def delete_post_via_put(post_id: str) -> dict:
+async def delete_post_via_put(
+    post_id: str,
+    _: str = Depends(require_admin_or_key),
+) -> dict:
     """Delete via PUT — FujiNet IWM workaround.
 
     The IWM firmware cannot send a DELETE request body, and OPEN_MODE_HTTP_DELETE

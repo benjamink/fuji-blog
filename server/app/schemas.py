@@ -15,6 +15,12 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class ApiKeyResponse(BaseModel):
+    """The Apple IIc client's pre-shared API key and where it comes from."""
+    api_key: str
+    source: str  # "file" (generated), "env" (API_KEY var), or "none"
+
+
 class BlogPostCreate(BaseModel):
     """Request model for creating a new blog post."""
     title: str = Field(..., min_length=1, max_length=200)

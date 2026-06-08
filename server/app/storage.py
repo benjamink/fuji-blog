@@ -59,7 +59,9 @@ class BlogStorage:
 
     def __init__(self, data_dir: str = None):
         if data_dir is None:
-            data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+            data_dir = os.environ.get("DATA_DIR") or os.path.join(
+                os.path.dirname(__file__), "..", "data"
+            )
         self.data_dir = data_dir
         self.posts_dir = os.path.join(data_dir, "posts")
         os.makedirs(self.posts_dir, exist_ok=True)

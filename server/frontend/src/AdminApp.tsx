@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react'
 import { blogAPI, BlogPost } from './api'
 import { PostList } from './components/PostList'
 import { PostEditor } from './components/PostEditor'
+import { ApiKeyPanel } from './components/ApiKeyPanel'
 import { logout } from './auth'
 import './App.css'
 
-type ViewMode = 'list' | 'edit' | 'new'
+type ViewMode = 'list' | 'edit' | 'new' | 'apikey'
 
 function AdminApp() {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
@@ -147,6 +148,12 @@ function AdminApp() {
           >
             New Post
           </button>
+          <button
+            className={`nav-btn ${viewMode === 'apikey' ? 'active' : ''}`}
+            onClick={() => setViewMode('apikey')}
+          >
+            API Key
+          </button>
         </nav>
       </header>
 
@@ -217,6 +224,8 @@ function AdminApp() {
             isSaving={loading}
           />
         )}
+
+        {viewMode === 'apikey' && <ApiKeyPanel />}
       </main>
     </div>
   )

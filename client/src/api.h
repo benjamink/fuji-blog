@@ -1,7 +1,9 @@
 #ifndef API_H
 #define API_H
 
-#define MAX_API_ID_LEN           64
+/* Post IDs are UUIDs (36 chars).  40 leaves a null + small margin while
+   reclaiming BSS vs the old 64 (10 list slots + s_id_result share this). */
+#define MAX_API_ID_LEN           40
 #define MAX_API_TITLE_LEN        64
 #define MAX_API_SLUG_LEN         128
 /* Body is streamed to the server in small chunks (see send_body_chunks in
