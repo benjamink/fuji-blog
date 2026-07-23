@@ -1,19 +1,62 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+import jsQR from 'jsqr'
 import { blogAPI, ApiKeyInfo } from '../api'
+
+function extractKey(raw: string): string | null {
+  const normalized = raw.trim().toLowerCase()
+  const match = normalized.match(/[0-9a-f]{10}/)
+  return match ? match[0] : null
+}
+
+/**
+ * Read one video frame and return any QR payload in it.
+ *
+ * Chrome/Edge on Android expose BarcodeDetector, which decodes on the GPU and
+ * is much cheaper; Safari and Firefox do not, and a phone browser is exactly
+ * where this feature gets used, so jsQR decodes a canvas snapshot as fallback.
+ */
+async function readFrame(
+  video: HTMLVideoElement,
+  detector: any | null,
+  canvas: HTMLCanvasElement | null,
+): Promise<string | null> {
+  if (video.readyState < video.HAVE_CURRENT_DATA) return null
+
+  if (detector) {
+    const codes = await detector.detect(video)
+    return codes.length > 0 ? codes[0].rawValue ?? null : null
+  }
+
+  const width = video.videoWidth
+  const height = video.videoHeight
+  if (!canvas || !width || !height) return null
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return null
+  ctx.drawImage(video, 0, 0, width, height)
+  const found = jsQR(ctx.getImageData(0, 0, width, height).data, width, height)
+  return found ? found.data : null
+}
 
 /**
  * Admin panel for the Apple IIc client's pre-shared API key.
  *
  * The IIc client can't send an Authorization header, so it authenticates by
  * appending this key as ?key= to admin requests.  Here the admin can view the
- * active key and generate/rotate it.  A generated key is stored server-side and
- * takes precedence over the API_KEY env var.
+ * active key, generate/rotate it, or import it from a scanned QR code.
  */
 export function ApiKeyPanel() {
   const [info, setInfo] = useState<ApiKeyInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [importValue, setImportValue] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [scanActive, setScanActive] = useState(false)
+  const [scanError, setScanError] = useState<string | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
     blogAPI
@@ -57,6 +100,99 @@ export function ApiKeyPanel() {
     }
   }
 
+  const supportsCamera =
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices &&
+    typeof navigator.mediaDevices.getUserMedia === 'function'
+
+  const importKey = async (rawText: string) => {
+    const key = extractKey(rawText)
+    if (!key) {
+      setError('A valid 10-character hex API key is required.')
+      return
+    }
+    setImporting(true)
+    setError(null)
+    setCopied(false)
+    try {
+      setInfo(await blogAPI.importApiKey(key))
+      setImportValue('')
+      setScanError(null)
+    } catch {
+      setError('Failed to import API key')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  /* The camera is driven from an effect rather than the click handler so the
+     <video> element is guaranteed to be mounted before the stream is attached
+     — starting it inline attaches to a ref that React has not yet populated. */
+  useEffect(() => {
+    if (!scanActive) return
+
+    let cancelled = false
+    let timer: number | null = null
+    let stream: MediaStream | null = null
+
+    const run = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+        })
+        const video = videoRef.current
+        if (cancelled || !video) return
+        video.srcObject = stream
+        await video.play()
+
+        const detector =
+          typeof (window as any).BarcodeDetector === 'function'
+            ? new (window as any).BarcodeDetector({ formats: ['qr_code'] })
+            : null
+
+        const tick = async () => {
+          if (cancelled) return
+          try {
+            const text = await readFrame(video, detector, canvasRef.current)
+            if (text !== null) {
+              const key = extractKey(text)
+              if (key) {
+                setScanActive(false)
+                await importKey(key)
+                return
+              }
+              setScanError('Found a QR code, but not a 10-character hex key.')
+            }
+          } catch {
+            setScanError('QR scan failed — enter the key by hand instead.')
+            setScanActive(false)
+            return
+          }
+          /* ~7 fps: fast enough to feel instant, slow enough that the jsQR
+             fallback does not peg a phone CPU. */
+          timer = window.setTimeout(tick, 150)
+        }
+        tick()
+      } catch {
+        if (!cancelled) {
+          setScanError('Camera access denied or unavailable.')
+          setScanActive(false)
+        }
+      }
+    }
+    run()
+
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+      if (stream) stream.getTracks().forEach((track) => track.stop())
+    }
+  }, [scanActive])
+
+  const handleImport = async () => {
+    await importKey(importValue)
+  }
+
   const sourceNote = (s: ApiKeyInfo['source']) =>
     s === 'file'
       ? 'Active key was generated here and stored on the server.'
@@ -71,9 +207,11 @@ export function ApiKeyPanel() {
       <h2 style={{ marginTop: 0 }}>Apple IIc Client API Key</h2>
       <p style={{ color: '#555', lineHeight: 1.5 }}>
         The Apple IIc client sends this key as <code>?key=</code> on admin
-        requests (it cannot send auth headers). Enter it on the client under{' '}
-        <strong>Configuration → API Key</strong>; it saves automatically on
-        entry.
+        requests (it cannot send auth headers). The easy way to set it: on the
+        client choose <strong>Configuration → Generate Key + QR</strong>, then
+        hit <strong>Scan QR code</strong> below and point the camera at the
+        Apple II screen. Generating here instead means typing the key into{' '}
+        <strong>Configuration → API Key</strong> by hand.
       </p>
 
       {error && <div className="error-banner">{error}</div>}
@@ -122,6 +260,79 @@ export function ApiKeyPanel() {
               ? 'Generate new key'
               : 'Generate key'}
           </button>
+
+          <div style={{ marginTop: 16, display: 'grid', gap: 10 }}>
+            <label style={{ fontSize: 13, color: '#666' }}>
+              Take a key from the Apple IIc
+            </label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                className="nav-btn active"
+                onClick={() => {
+                  setScanError(null)
+                  setScanActive(true)
+                }}
+                disabled={!supportsCamera || scanActive || importing}
+              >
+                {scanActive ? 'Scanning…' : 'Scan QR code'}
+              </button>
+              {scanActive && (
+                <button className="nav-btn" onClick={() => setScanActive(false)}>
+                  Stop scan
+                </button>
+              )}
+              {!supportsCamera && (
+                <span style={{ color: '#999', fontSize: 12 }}>
+                  No camera available in this browser — type the key below.
+                </span>
+              )}
+            </div>
+
+            {scanActive && (
+              <div>
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  autoPlay
+                  style={{
+                    width: '100%',
+                    maxHeight: 320,
+                    borderRadius: 8,
+                    background: '#000',
+                    objectFit: 'contain',
+                  }}
+                />
+                <p style={{ fontSize: 12, color: '#777', margin: '6px 0 0' }}>
+                  Fill the frame with the Apple II screen and hold steady.
+                </p>
+              </div>
+            )}
+            <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+            {scanError && (
+              <div className="error-banner" style={{ marginTop: 0 }}>
+                {scanError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                value={importValue}
+                onChange={(event) => setImportValue(event.target.value)}
+                placeholder="…or type the 10-character key shown on the IIc"
+                style={{ flex: 1, minWidth: 220, padding: '8px 10px', borderRadius: 6, border: '1px solid #ddd' }}
+              />
+              <button
+                className="nav-btn"
+                onClick={handleImport}
+                disabled={importing || !importValue}
+              >
+                {importing ? 'Saving…' : 'Use this key'}
+              </button>
+            </div>
+          </div>
 
           <p style={{ fontSize: 12, color: '#999', marginTop: 16 }}>
             Keys are 10 characters — short enough to type by hand on the Apple

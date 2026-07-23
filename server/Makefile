@@ -35,7 +35,7 @@ build:
 	docker build -t $(IMG) .
 
 ## Run a detached container with a freshly generated JWT_SECRET
-run:
+run: build
 	docker run -d \
 		--name $(NAME) \
 		-p $(PORT):8000 \
@@ -46,7 +46,7 @@ run:
 	@echo "Server running at http://localhost:$(PORT)"
 
 ## Run in the foreground — logs to stdout, Ctrl-C stops and removes the container
-dev:
+dev: build
 	docker run --rm \
 		--name $(NAME) \
 		-p $(PORT):8000 \

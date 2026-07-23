@@ -21,6 +21,11 @@ class ApiKeyResponse(BaseModel):
     source: str  # "file" (generated), "env" (API_KEY var), or "none"
 
 
+class ApiKeyImportRequest(BaseModel):
+    """Request body for importing a client API key from a scanned QR code."""
+    api_key: str
+
+
 class BlogPostCreate(BaseModel):
     """Request model for creating a new blog post."""
     title: str = Field(..., min_length=1, max_length=200)

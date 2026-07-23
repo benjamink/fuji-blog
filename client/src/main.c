@@ -9,6 +9,7 @@
 #include "network.h"
 #include "ui.h"
 #include "splash.h"
+#include "qrcode.h"
 
 /* FujiNet App Key — creator @BEE5, app 0x01 (FujiBlogger).
    Key slot 0x00 stores the server URL (up to MAX_APPKEY_LEN = 64 bytes).
@@ -2279,6 +2280,68 @@ static void edit_text_field(const char *title, char *dst, int dstsize)
     }
 }
 
+/* ── generate_api_key ──────────────────────────────────────── */
+
+/* Mint a fresh 10-hex-character admin key, store it, and show it as a QR code
+   for the web admin to scan (API Key tab → Scan QR code).  This replaces the
+   old direction of travel — generate in the browser, type it in on the IIc —
+   which meant hand-entering a key on an Apple IIc keyboard.
+
+   Entropy comes from the FujiNet's GUID generator (the ESP32 has a hardware
+   RNG; the Apple IIc has no entropy source worth the name).  Ten hex chars is
+   40 bits, matching what the server's own generator produces. */
+static void generate_api_key(void)
+{
+    /* s_json_buf doubles as the GUID landing buffer — nothing is mid-upload
+       while the Configuration screen is open. */
+    char *guid = s_json_buf;
+    int i, n = 0;
+
+    HOME();
+    ui_header("GENERATE KEY", "");
+    ui_hline();
+    printf("\n  Replaces the current key.  It only\n");
+    printf("  works once the web admin has scanned\n");
+    printf("  the QR code.\n\n");
+    printf("  Generate? (Y/N): ");
+    if (toupper(getchar()) != 'Y')
+        return;
+
+    guid[0] = '\0';
+    if (!fuji_generate_guid(guid)) {
+        printf("\n\n  FujiNet error.\n");
+        wait_key();
+        return;
+    }
+
+    /* A GUID is 8-4-4-4-12 hex with dashes; take the first 10 hex digits. */
+    for (i = 0; guid[i] != '\0' && n < 10; i++) {
+        if (isxdigit((unsigned char)guid[i]))
+            api_key[n++] = (char)tolower(guid[i]);
+    }
+    if (n < 10) {
+        printf("\n\n  Bad GUID from FujiNet.\n");
+        wait_key();
+        return;
+    }
+    api_key[10] = '\0';
+    appkey_save();
+
+    HOME();
+    ui_header("NEW API KEY", "");
+    ui_hline();
+    printf("\n  Key: %s\n\n", api_key);
+    printf("  Saved here.  In the web admin open\n");
+    printf("  API Key -> Scan QR code and point\n");
+    printf("  the camera at the next screen.\n\n");
+    wait_key();
+
+    /* s_body is the scratch grid: nothing is being edited from this screen,
+       and it is the only buffer with 441 bytes to spare. */
+    qr_display(api_key, (uint8_t *)s_body);
+    s_body[0] = '\0';
+}
+
 void show_config(void)
 {
     int choice;
@@ -2291,30 +2354,31 @@ void show_config(void)
 #ifdef __CC65__
         {
             /* CC65 path: draw ALL items via gotoxy — no printf for items.
-               Items at rows 3-5, info at rows 7-8, hline at row 10.     */
-            static const char *const cfg_labels[3] = {
+               Items at rows 3-6, info at rows 8-9, hline at row 11.     */
+            static const char *const cfg_labels[4] = {
                 "1.  Server URL",
                 "2.  API Key",
+                "3.  Generate Key + QR",
                 "Q.  Back"
             };
-            static const char cfg_keys[3] = { '1', '2', 'Q' };
+            static const char cfg_keys[4] = { '1', '2', '3', 'Q' };
             uint8_t cols = (uint8_t)screen_width;
             uint8_t ind  = (cols >= 80) ? 20 : 4;
             int sel = 0, done = 0, ch_in, k;
 
-            /* URL / key info at rows 7-8 (items 3-5, blank 6) */
-            gotoxy(0, 7);
+            /* URL / key info at rows 8-9 (items 3-6, blank 7) */
+            gotoxy(0, 8);
             printf("      URL: %s\n", server_url);
             printf("      Key: %s\n",
-                   api_key[0] ? "(configured)" : "(none)");
+                   api_key[0] ? api_key : "(none)");
 
-            /* Footer at row 10 */
-            gotoxy(0, 10);
+            /* Footer at row 11 */
+            gotoxy(0, 11);
             ui_hline();
-            cputs("  Arrow keys / Return, or 1-2 / Q");
+            cputs("  Arrow keys / Return, or 1-3 / Q");
 
             do {
-                sel = run_menu(cfg_labels, cfg_keys, 3, 3, cols, ind);
+                sel = run_menu(cfg_labels, cfg_keys, 4, 3, cols, ind);
             } while (sel == -2);
             choice = (sel >= 0) ? cfg_keys[sel] : 'Q';
         }
@@ -2323,9 +2387,10 @@ void show_config(void)
         printf("\n");
         ui_indent(); printf("1.  Server URL\n");
         ui_indent(); printf("2.  API Key\n");
+        ui_indent(); printf("3.  Generate Key + QR\n");
         ui_indent(); printf("Q.  Back\n");
         printf("\n      URL: %s\n", server_url);
-        printf("      Key: %s\n\n", api_key[0] ? "(configured)" : "(none)");
+        printf("      Key: %s\n\n", api_key[0] ? api_key : "(none)");
         ui_hline();
         printf("  Q: Back   Select: ");
         choice = toupper(getchar());
@@ -2337,6 +2402,8 @@ void show_config(void)
             edit_text_field("SERVER URL", server_url, sizeof(server_url));
         } else if (choice == '2') {
             edit_text_field("API KEY", api_key, sizeof(api_key));
+        } else if (choice == '3') {
+            generate_api_key();
         }
     }
 }

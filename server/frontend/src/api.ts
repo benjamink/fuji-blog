@@ -154,4 +154,10 @@ export const blogAPI = {
     const { data } = await api.post('/auth/apikey/generate')
     return data
   },
+
+  // Apple IIc client API key — import an explicit key from QR scan or manual entry
+  async importApiKey(api_key: string): Promise<ApiKeyInfo> {
+    const { data } = await api.post('/auth/apikey/import', { api_key })
+    return data
+  },
 }

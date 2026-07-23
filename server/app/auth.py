@@ -156,14 +156,11 @@ def get_active_api_key() -> tuple[str, str]:
     return "", "none"
 
 
-def generate_api_key() -> str:
-    """Generate a new client API key, persist it, and return it.
-
-    10 hex chars (40 bits) — deliberately short so it's easy to type by hand on
-    the Apple IIc client. Fine for a trusted-LAN hobby tool; not a high-security
-    credential.
-    """
-    key = secrets.token_hex(5)
+def persist_api_key(key: str) -> str:
+    """Persist a client API key to disk and return the normalized key."""
+    key = key.strip().lower()
+    if len(key) != 10 or any(c not in '0123456789abcdef' for c in key):
+        raise ValueError("API key must be 10 hex characters")
     API_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
     API_KEY_PATH.write_text(key)
     try:
@@ -171,6 +168,16 @@ def generate_api_key() -> str:
     except OSError:
         pass  # best-effort on filesystems without POSIX permissions
     return key
+
+
+def generate_api_key() -> str:
+    """Generate a new client API key, persist it, and return it.
+
+    10 hex chars (40 bits) — deliberately short so it's easy to type by hand on
+    the Apple IIc client. Fine for a trusted-LAN hobby tool; not a high-security
+    credential.
+    """
+    return persist_api_key(secrets.token_hex(5))
 
 
 def create_access_token(username: str) -> str:

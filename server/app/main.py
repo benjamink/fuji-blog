@@ -11,11 +11,13 @@ from .auth import (
     create_access_token,
     generate_api_key,
     get_active_api_key,
+    persist_api_key,
     require_admin,
     require_admin_or_key,
     verify_password,
 )
 from .schemas import (
+    ApiKeyImportRequest,
     ApiKeyResponse,
     BlogPostCreate,
     BlogPostPublish,
@@ -129,6 +131,22 @@ def rotate_api_key(_: str = Depends(require_admin)) -> ApiKeyResponse:
     with the new key.
     """
     return ApiKeyResponse(api_key=generate_api_key(), source="file")
+
+
+@app.post("/api/auth/apikey/import", response_model=ApiKeyResponse)
+def import_api_key(
+    req: ApiKeyImportRequest,
+    _: str = Depends(require_admin),
+) -> ApiKeyResponse:
+    """Import an explicit API key from the admin UI (e.g. scanned QR code)."""
+    try:
+        key = persist_api_key(req.api_key)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    return ApiKeyResponse(api_key=key, source="file")
 
 
 # ============================================================================

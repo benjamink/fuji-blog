@@ -15,7 +15,8 @@ fujiblogger/   (repo: fuji-blog)
 │       ├── main.c           # Client entry point
 │       ├── blog_client.c    # Blog UI and menu handling
 │       ├── network.c        # FujiNet HTTP transport
-│       └── api.c            # Server API communication layer
+│       ├── api.c            # Server API communication layer
+│       └── qrcode.c         # QR encoder + lo-res renderer (API key handoff)
 │
 └── server/                  # Python FastAPI + React server
     ├── pyproject.toml       # uv project config and Python dependencies
@@ -196,6 +197,16 @@ Write endpoints (`POST /api/posts`, `PUT /api/posts`, `PUT /api/posts/{id}`, `PA
   - Body: `{ "markdown_body": "..." }`
   - Returns: `{ "html": "..." }`
 
+#### Client API Key *(web admin, Bearer JWT only)*
+- **GET** `/api/auth/apikey` — Returns `{ "api_key", "source" }` where `source`
+  is `file` / `env` / `none`
+- **POST** `/api/auth/apikey/generate` — Mint a key server-side and persist it
+- **POST** `/api/auth/apikey/import` — Adopt a key minted by the Apple IIc
+  - Body: `{ "api_key": "<10 hex chars>" }`
+  - Case-insensitive; `400` if the value is not exactly 10 hex characters
+  - This is the endpoint the QR scan feeds — see
+    [Key handoff by QR code](#key-handoff-by-qr-code)
+
 ## Authentication
 
 Administering posts (create / update / delete / publish / append, and the
@@ -223,13 +234,17 @@ through to the `?key=` check instead of 401-ing early.
 
 ### Configuring the key
 
-Two ways to set the active key (a generated key takes precedence over the env
-var, so it can be rotated without a restart):
+Three ways to set the active key (a key stored at `API_KEY_PATH` takes
+precedence over the env var, so it can be rotated without a restart):
 
-- **Web admin (recommended):** log in and open the **API Key** tab. It shows the
-  active key and a **Generate** button (`ApiKeyPanel.tsx`). Generating calls
+- **Client-generated + QR scan (recommended).** The Apple IIc mints the key and
+  the browser reads it off the screen, so nothing has to be typed on the IIc
+  keyboard. See [Key handoff by QR code](#key-handoff-by-qr-code) below.
+- **Web admin:** log in and open the **API Key** tab. It shows the active key
+  and a **Generate** button (`ApiKeyPanel.tsx`). Generating calls
   `POST /api/auth/apikey/generate` (Bearer-JWT only), which writes a 10-char key
-  to `API_KEY_PATH` (default `data/.apikey`) and returns it to copy.
+  to `API_KEY_PATH` (default `data/.apikey`) and returns it to copy. You then
+  have to type that key into the client by hand.
   `GET /api/auth/apikey` returns the current key and its `source`
   (`file` / `env` / `none`).
 - **Env var:** set `API_KEY` to a random secret
@@ -238,17 +253,46 @@ var, so it can be rotated without a restart):
   (Bearer JWTs only).
 
 Generated keys are **10 hex chars (40 bits)** — deliberately short so they're
-easy to type by hand on the Apple IIc. That's a trusted-LAN convenience, not a
-high-security credential; pair with HTTPS and don't expose the server publicly.
-**Max key length is 63 characters** — the FujiNet App Key store caps a slot at
-64 bytes and the client reserves one for the trailing NUL, so a hand-set key
-must stay ≤ 63 chars.
+easy to type by hand on the Apple IIc, and short enough to fit a QR **version 1**
+symbol (17 payload bytes), which is the only size the client can encode. That's
+a trusted-LAN convenience, not a high-security credential; pair with HTTPS and
+don't expose the server publicly. **Max key length is 63 characters** — the
+FujiNet App Key store caps a slot at 64 bytes and the client reserves one for
+the trailing NUL, so a hand-set key must stay ≤ 63 chars.
 
 - **Client:** enter the key in **Configuration → 2. API Key**. It is saved to
   the FujiNet App Key automatically on entry (no separate save step) — stored in
   slot `APPKEY_KEY_APIKEY` (0x01) alongside the server URL (slot 0x00, also
   auto-saved on edit) and reloaded at startup. `key_suffix()` in `main.c`
   appends it to every admin request.
+
+### Key handoff by QR code
+
+The key travels **from the Apple IIc to the server**, not the other way round —
+reading a key off a browser and typing it into an Apple IIc is the worst part of
+setup, and this removes it.
+
+1. **Client → Configuration → 3. Generate Key + QR**
+   (`generate_api_key()` in `client/src/main.c`). It calls
+   `fuji_generate_guid()` — the ESP32 has a hardware RNG, the Apple IIc has no
+   entropy source worth the name — and takes the first 10 hex digits. The key is
+   written to the App Key immediately, so the client is already configured.
+2. The client shows the key as text, then renders it as a QR code
+   (`qr_display()` in `client/src/qrcode.c`).
+3. **Web admin → API Key tab → Scan QR code.** `ApiKeyPanel.tsx` opens the
+   camera and decodes with `BarcodeDetector` where available, falling back to
+   `jsQR` (Safari and Firefox have no `BarcodeDetector`, and a phone is the
+   likely scanning device). `POST /api/auth/apikey/import` (Bearer-JWT only)
+   validates the 10-hex-char shape and persists it to `API_KEY_PATH`.
+   The same panel accepts the key typed in by hand as a fallback.
+
+The QR payload is the bare key with no prefix or URL wrapper — it has to fit
+version 1, and the panel's `extractKey()` just pulls the first `[0-9a-f]{10}`
+run out of whatever it decodes.
+
+Until step 3 completes the server does not know the new key, so the client's
+requests will 401. That is intentional: the client cannot be allowed to set its
+own credential.
 
 ### Caveat — keys in URLs
 
@@ -265,6 +309,13 @@ possible. The web admin avoids this by using the `Authorization` header.
 4. **Toggle Publish** — Publish or unpublish a post
 5. **Delete Post** — Remove a post
 6. **Network Status** — Check FujiNet connectivity
+
+### Configuration Menu
+
+1. **Server URL** — edit and auto-save to App Key slot 0x00
+2. **API Key** — type a key by hand; auto-saves to App Key slot 0x01
+3. **Generate Key + QR** — mint a key on the IIc and show it as a QR code for
+   the web admin to scan (see [Key handoff by QR code](#key-handoff-by-qr-code))
 
 ### Workflows
 
@@ -311,6 +362,77 @@ perr = network_json_parse(spec);
 pn   = network_json_query(spec, "/id", id_buf);
 network_close(spec);
 ```
+
+### Main RAM is full — the QR encoder lives in the language card
+
+`apple2-fujiblog.cfg` already raises `__HIMEM__` to `$B000`, and after that the
+BSS segment ends around `$A790` against a `$A800` ceiling — roughly 100 bytes
+spare. There is no room in main RAM for a new feature of any size.
+
+`client/src/qrcode.c` therefore compiles into the **LC segment** (`#pragma
+code-name ("LC")` / `rodata-name ("LC")`), which cc65's apple2 startup copies to
+language-card bank 2 at `$D400`–`$DFFF` — 3 KB that is otherwise unused. The
+encoder currently occupies ~2.5 KB of it. Two rules follow:
+
+- **Do not call fujinet-lib from LC code.** The FujiNet calls go through
+  ProDOS/SmartPort firmware, which does its own bank switching. Keep LC code to
+  pure computation.
+- **Watch the ceiling.** `ld65` reports `Segment 'LC' overflows memory area 'LC'`
+  if it grows past 3 KB.
+
+The 441-byte module grid is *not* in qrcode.c's BSS — `qr_display()` takes the
+buffer from the caller, and `main.c` passes `s_body`, which is idle while the
+Configuration screen is up. Adding a dedicated buffer would not fit.
+
+### Soft switches must be written, not read
+
+cc65's optimizer **discards a volatile read whose value is unused**, so the
+natural-looking idiom is silently compiled to nothing:
+
+```c
+(void)*(volatile uint8_t *)0xC050;   /* WRONG — emits no code at all */
+*(volatile uint8_t *)0xC050 = 0;     /* right — emits `sta $C050`    */
+```
+
+This bit the QR renderer: every mode-switch access vanished, the display stayed
+in text mode, and the QR grid at `$0400` was drawn as text characters. The
+symptom is deceptive — the data is perfectly correct, only the mode change is
+missing. On the IIe/IIc these switches trigger on any access, so a store works
+exactly like a load. `qrcode.c` uses a `SOFTSW_HIT()` macro for this.
+
+Check the generated code when a soft switch appears not to take effect:
+
+```bash
+sed -n '/\.proc\t_qr_render/,/\.endproc/p' build/apple2/src/qrcode.lst \
+  | grep -E "(sta|lda)\s+\\\$C0"
+```
+
+A read *is* kept when the value is used — the keyboard poll `while (!(SOFTSW(0xC000) & 0x80))` compiles fine.
+
+### QR rendering uses lo-res, not hi-res
+
+Hi-res page 1 (`$2000`) and page 2 (`$4000`) both sit **inside the program's own
+code**, which loads from `$0803` to roughly `$9000`. The only bitmap page that
+can be scribbled on is lo-res/text page 1 at `$0400`–`$07FF`, below the load
+address.
+
+Lo-res is 40×48 blocks and a block is about **1.6× wider than it is tall**, so
+each QR module is drawn **1 block wide × 2 blocks tall** (≈0.8:1, much nearer
+square). A version-1 symbol is then 21×42 blocks, leaving 9 blocks of quiet zone
+left and right and 3 above and below. `qr_render()` switches to 40 columns via
+`videomode()` (never poke `$C00C`/`$C000` directly — it desynchronises the
+80-column firmware) and polls `$C000` for a keypress rather than calling
+`cgetc()`, which would draw a cursor into `$0400` and punch a hole in the symbol.
+
+**The mask is hard-coded to 2.** A conforming encoder scores all eight masks
+against four penalty rules; that logic costs over a kilobyte the language card
+does not have. Fixing the mask is safe here only because the payload is never
+arbitrary — always exactly ten hex characters. All eight masks were checked
+against 400 random keys, rendered at the exact geometry above and decoded with
+zxing-cpp (the engine behind `BarcodeDetector`) at four blur/noise levels:
+1600/1600 reads each. Against Nayuki's reference encoder the output is
+byte-identical for 503/503 keys. **If the payload ever stops being a 10-char hex
+key, this assumption has to be re-tested.**
 
 ### cc65 stack constraints
 
@@ -434,7 +556,8 @@ curl -X POST http://localhost:8000/api/posts \
 - Check the FujiNet serial console. If you see `special_set_channel_mode(0)` for every mode change and `http_transaction() done, resultCode=-1, fileSize=0`, the IWM firmware channel-mode bug is active (see Platform Notes above). The client already works around this using `OPEN_MODE_HTTP_PUT` + `network_write()`.
 - If you see nothing in the **server** logs when a write is attempted, the TCP connection is not reaching the server — check the URL, port, and firewall.
 - Response size matters: if `network_json_parse()` returns an error but the server logs show a 200/201, the response JSON may be too large for FujiNet's buffer. Ensure write endpoints return `BlogPostSummary` not `BlogPostResponse`.
-- **401 in the server logs** (or empty post lists): the API key is missing or wrong. Set it in **Configuration → API Key** on the client and ensure the server's `API_KEY` env var matches (≤ 63 chars). With no key configured, even listing posts returns 401 because `/api/posts/summaries` requires auth. See [Authentication](#authentication).
+- **401 in the server logs** (or empty post lists): the API key is missing or wrong. The quickest fix is **Configuration → 3. Generate Key + QR** on the client, then **API Key → Scan QR code** in the web admin. If the key was generated on the IIc but never scanned, the server has never seen it and every admin request will 401 — that step is not optional. Otherwise set it in **Configuration → API Key** on the client and ensure the server's `API_KEY` env var matches (≤ 63 chars). With no key configured, even listing posts returns 401 because `/api/posts/summaries` requires auth. See [Authentication](#authentication).
+- **The QR code won't scan.** Turn down screen brightness or shoot at a slight angle to kill glare; the whole 40×48 lo-res field is white, so the quiet zone is the screen itself. Fill the camera frame with the screen. On Safari/Firefox the scanner uses the slower jsQR fallback (no `BarcodeDetector`) — hold steady a moment longer. The key is also printed as text on the preceding screen and can be typed into the admin panel's input as a fallback.
 
 ### "Relocation/Configuration Error" on Apple IIc boot
 - ProDOS filenames are limited to 15 characters and only allow A–Z, 0–9, and period.
