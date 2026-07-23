@@ -3,7 +3,7 @@
 
    Builds large bitmap letters from inverse-video space characters drawn
    with gotoxy()/revers() in the existing 80-column text mode.
-   Inverse ' ' = solid green block on Apple IIc phosphor display.
+   Inverse ' ' = solid green block on an Apple II phosphor display.
    No mode switching, no soft switches, no graphics pages needed.
 
    Layout (80 × 24 text rows):

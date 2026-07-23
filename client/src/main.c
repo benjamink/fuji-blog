@@ -2284,11 +2284,11 @@ static void edit_text_field(const char *title, char *dst, int dstsize)
 
 /* Mint a fresh 10-hex-character admin key, store it, and show it as a QR code
    for the web admin to scan (API Key tab → Scan QR code).  This replaces the
-   old direction of travel — generate in the browser, type it in on the IIc —
-   which meant hand-entering a key on an Apple IIc keyboard.
+   old direction of travel — generate in the browser, type it in on the
+   Apple II — which meant hand-entering a key on an Apple II keyboard.
 
    Entropy comes from the FujiNet's GUID generator (the ESP32 has a hardware
-   RNG; the Apple IIc has no entropy source worth the name).  Ten hex chars is
+   RNG; the Apple II has no entropy source worth the name).  Ten hex chars is
    40 bits, matching what the server's own generator produces. */
 static void generate_api_key(void)
 {

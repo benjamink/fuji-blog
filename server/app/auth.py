@@ -15,7 +15,7 @@ JWT_SECRET        HMAC signing secret.  If unset a random key is generated
                   sessions.
 JWT_EXPIRE_HOURS  Token lifetime in hours (default: 24).
 HTPASSWD_PATH     Path to the htpasswd file (default: data/.htpasswd).
-API_KEY           Pre-shared admin key for the Apple IIc FujiNet client.
+API_KEY           Pre-shared admin key for the Apple II FujiNet client.
                   The IWM firmware cannot send custom request headers
                   (see CLAUDE.md), so the client cannot supply an
                   ``Authorization: Bearer`` token.  Instead it sends this
@@ -61,14 +61,14 @@ HTPASSWD_PATH = Path(
     os.environ.get("HTPASSWD_PATH", "data/.htpasswd")
 )
 
-# Pre-shared key for the Apple IIc client (query-param auth).  Empty == off.
+# Pre-shared key for the Apple II client (query-param auth).  Empty == off.
 # A key generated from the web admin is persisted to API_KEY_PATH and takes
 # precedence over this env var (so it can be rotated without a restart).
 API_KEY = os.environ.get("API_KEY", "")
 API_KEY_PATH = Path(os.environ.get("API_KEY_PATH", "data/.apikey"))
 
 # auto_error=False so a missing/!malformed Authorization header does NOT raise
-# before we get a chance to check the ?key= query param (the Apple IIc client
+# before we get a chance to check the ?key= query param (the Apple II client
 # can only authenticate via the query string — it cannot send headers).
 _bearer = HTTPBearer(auto_error=False)
 
@@ -174,7 +174,7 @@ def generate_api_key() -> str:
     """Generate a new client API key, persist it, and return it.
 
     10 hex chars (40 bits) — deliberately short so it's easy to type by hand on
-    the Apple IIc client. Fine for a trusted-LAN hobby tool; not a high-security
+    the Apple II client. Fine for a trusted-LAN hobby tool; not a high-security
     credential.
     """
     return persist_api_key(secrets.token_hex(5))
@@ -230,7 +230,7 @@ def require_admin_or_key(
     key: str | None = Query(default=None),
 ) -> str:
     """FastAPI dependency accepting EITHER a Bearer JWT (web admin) OR a
-    matching ``?key=`` query param (Apple IIc client).
+    matching ``?key=`` query param (Apple II client).
 
     The IWM firmware cannot send request headers, so the client authenticates
     by appending ``?key=<API_KEY>`` to the request URL.  The web frontend keeps

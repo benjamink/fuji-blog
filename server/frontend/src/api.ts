@@ -143,19 +143,19 @@ export const blogAPI = {
     return data
   },
 
-  // Apple IIc client API key — read current
+  // Apple II client API key — read current
   async getApiKey(): Promise<ApiKeyInfo> {
     const { data } = await api.get('/auth/apikey')
     return data
   },
 
-  // Apple IIc client API key — generate/rotate
+  // Apple II client API key — generate/rotate
   async generateApiKey(): Promise<ApiKeyInfo> {
     const { data } = await api.post('/auth/apikey/generate')
     return data
   },
 
-  // Apple IIc client API key — import an explicit key from QR scan or manual entry
+  // Apple II client API key — import an explicit key from QR scan or manual entry
   async importApiKey(api_key: string): Promise<ApiKeyInfo> {
     const { data } = await api.post('/auth/apikey/import', { api_key })
     return data

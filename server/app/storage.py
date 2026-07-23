@@ -305,7 +305,7 @@ class BlogStorage:
     def append_body(self, post_id: str, data: str) -> Optional[BlogPost]:
         """Append `data` to a post's markdown_body and persist.
 
-        Used by the chunked-upload path: the Apple IIc client streams long
+        Used by the chunked-upload path: the Apple II client streams long
         post bodies in small pieces (the FujiNet IWM write buffer caps around
         1 KB per request).  The title is untouched, so the slug/filename never
         changes here.

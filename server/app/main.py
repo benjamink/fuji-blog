@@ -35,7 +35,7 @@ from .blog_renderer import BlogRenderer
 
 app = FastAPI(
     title="FujiBlogger API",
-    description="API for managing blog posts on Apple IIc via FujiNet",
+    description="API for managing blog posts on the Apple II via FujiNet",
     version="0.1.0",
 )
 
@@ -45,7 +45,7 @@ renderer = BlogRenderer()
 # ---------------------------------------------------------------------------
 # Deduplication caches for PUT endpoints
 #
-# The FujiNet IWM firmware (Apple IIc) keeps the PUT body in a postData
+# The FujiNet IWM firmware keeps the PUT body in a postData
 # buffer.  network_json_parse() sends the HTTP PUT and reads the response,
 # but the buffer is NOT cleared afterward.  When network_close() is called
 # next, the firmware flushes the same buffer again — sending a second
@@ -63,7 +63,7 @@ _PUT_DEDUP_TTL = 30          # seconds — covers any realistic firmware retry
 _put_dedup_cache: dict = {}  # fingerprint -> (post_id, expires_at)
 _delete_dedup_cache: dict = {}  # post_id -> expires_at
 
-# Chunked body upload (Apple IIc): the client streams a long markdown body in
+# Chunked body upload (Apple II): the client streams a long markdown body in
 # small append requests, each tagged with a monotonic seq number.  We track the
 # last applied seq per post so the IWM firmware's double-flush (it re-sends every
 # PUT body on close) is deduplicated.  A create/update resets the counter to -1.
@@ -115,7 +115,7 @@ def login(req: LoginRequest) -> TokenResponse:
 
 @app.get("/api/auth/apikey", response_model=ApiKeyResponse)
 def read_api_key(_: str = Depends(require_admin)) -> ApiKeyResponse:
-    """Return the Apple IIc client's current API key (web admin only).
+    """Return the Apple II client's current API key (web admin only).
 
     Bearer-JWT protected — the client never needs this endpoint.
     """
@@ -177,7 +177,7 @@ async def create_post_via_put(
     request: Request,
     _: str = Depends(require_admin_or_key),
 ) -> BlogPostSummary:
-    """Create a post via PUT — workaround for Apple IIc FujiNet IWM firmware bug where
+    """Create a post via PUT — workaround for a FujiNet IWM firmware bug where
     HTTP_CHAN_MODE_POST_SET_DATA is never applied, so POST body writes are discarded.
     PUT method writes in DATA mode (mode 0) correctly land in postData.
 
@@ -239,7 +239,7 @@ async def append_post_body(
     request: Request,
     _: str = Depends(require_admin_or_key),
 ):
-    """Append a chunk to a post's markdown body (Apple IIc chunked upload).
+    """Append a chunk to a post's markdown body (Apple II chunked upload).
 
     Body format is raw text:  "<seq>\\n<chunk-data>"
       - <seq> is a decimal sequence number starting at 0
@@ -364,7 +364,7 @@ def get_post_body(
     use network_read() instead.
 
     For long bodies the IWM HTTP *receive* buffer also caps a single GET
-    response (~1 KB), so the Apple IIc client fetches the body in slices:
+    response (~1 KB), so the Apple II client fetches the body in slices:
       ?offset=N&len=M  returns markdown_body[N : N+M]
     Omitting both (or len=0) returns the whole body (web / large-buffer
     clients).  The client keeps requesting slices until it receives fewer than

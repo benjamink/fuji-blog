@@ -8,6 +8,28 @@ function extractKey(raw: string): string | null {
   return match ? match[0] : null
 }
 
+/* A QR symbol: three finder patterns plus scattered modules. Inline rather
+   than an icon font so the panel stays dependency-free. */
+function QrGlyph() {
+  return (
+    <svg
+      className="qr-scan-btn__icon"
+      viewBox="0 0 32 32"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d="M3 3h10v10H3V3zm2 2v6h6V5H5zm2 2h2v2H7V7z
+           M19 3h10v10H19V3zm2 2v6h6V5h-6zm2 2h2v2h-2V7z
+           M3 19h10v10H3V19zm2 2v6h6v-6H5zm2 2h2v2H7v-2z"
+      />
+      <path d="M16 3h2v4h-2V3zm0 6h2v4h-2V9zm3 8h4v2h-4v-2z" />
+      <path d="M16 16h2v2h-2v-2zm9 0h4v2h-4v-2zm2 3h2v4h-2v-4zm-6 0h2v2h-2v-2zm-5 3h2v3h-2v-3zm5 3h2v2h-2v-2zm5 0h4v2h-4v-2zm-9 2h2v2h-2v-2z" />
+    </svg>
+  )
+}
+
 /**
  * Read one video frame and return any QR payload in it.
  *
@@ -40,9 +62,9 @@ async function readFrame(
 }
 
 /**
- * Admin panel for the Apple IIc client's pre-shared API key.
+ * Admin panel for the Apple II client's pre-shared API key.
  *
- * The IIc client can't send an Authorization header, so it authenticates by
+ * The Apple II client can't send an Authorization header, so it authenticates by
  * appending this key as ?key= to admin requests.  Here the admin can view the
  * active key, generate/rotate it, or import it from a scanned QR code.
  */
@@ -72,7 +94,7 @@ export function ApiKeyPanel() {
       replacing &&
       !window.confirm(
         'Generate a new key? The current key stops working immediately and ' +
-          'every Apple IIc client must be updated with the new key.',
+          'every Apple II client must be updated with the new key.',
       )
     ) {
       return
@@ -199,14 +221,14 @@ export function ApiKeyPanel() {
       : s === 'env'
       ? 'Active key comes from the API_KEY environment variable. Generating ' +
         'one here will override it without a restart.'
-      : 'No key configured yet. Generate one to let the Apple IIc client ' +
+      : 'No key configured yet. Generate one to let the Apple II client ' +
         'authenticate.'
 
   return (
     <div className="apikey-panel" style={{ maxWidth: 640 }}>
-      <h2 style={{ marginTop: 0 }}>Apple IIc Client API Key</h2>
+      <h2 style={{ marginTop: 0 }}>Apple II Client API Key</h2>
       <p style={{ color: '#555', lineHeight: 1.5 }}>
-        The Apple IIc client sends this key as <code>?key=</code> on admin
+        The Apple II client sends this key as <code>?key=</code> on admin
         requests (it cannot send auth headers). The easy way to set it: on the
         client choose <strong>Configuration → Generate Key + QR</strong>, then
         hit <strong>Scan QR code</strong> below and point the camera at the
@@ -263,18 +285,28 @@ export function ApiKeyPanel() {
 
           <div style={{ marginTop: 16, display: 'grid', gap: 10 }}>
             <label style={{ fontSize: 13, color: '#666' }}>
-              Take a key from the Apple IIc
+              Take a key from the Apple II
             </label>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="qr-scan-row">
               <button
-                className="nav-btn active"
+                className={`qr-scan-btn${scanActive ? ' is-scanning' : ''}`}
                 onClick={() => {
                   setScanError(null)
                   setScanActive(true)
                 }}
                 disabled={!supportsCamera || scanActive || importing}
               >
-                {scanActive ? 'Scanning…' : 'Scan QR code'}
+                <QrGlyph />
+                <span>
+                  <span className="qr-scan-btn__label">
+                    {scanActive ? 'Scanning…' : 'Scan QR code'}
+                  </span>
+                  <span className="qr-scan-btn__hint">
+                    {scanActive
+                      ? 'Looking for a code — hold the camera steady'
+                      : 'Point the camera at the Apple II screen'}
+                  </span>
+                </span>
               </button>
               {scanActive && (
                 <button className="nav-btn" onClick={() => setScanActive(false)}>
@@ -321,7 +353,7 @@ export function ApiKeyPanel() {
                 type="text"
                 value={importValue}
                 onChange={(event) => setImportValue(event.target.value)}
-                placeholder="…or type the 10-character key shown on the IIc"
+                placeholder="…or type the 10-character key shown on the Apple II"
                 style={{ flex: 1, minWidth: 220, padding: '8px 10px', borderRadius: 6, border: '1px solid #ddd' }}
               />
               <button
@@ -336,7 +368,7 @@ export function ApiKeyPanel() {
 
           <p style={{ fontSize: 12, color: '#999', marginTop: 16 }}>
             Keys are 10 characters — short enough to type by hand on the Apple
-            IIc. The key can appear in server access logs — use HTTPS on
+            II. The key can appear in server access logs — use HTTPS on
             untrusted networks.
           </p>
         </>

@@ -1,9 +1,9 @@
 # FujiBlogger
 
-Write and publish blog posts from a real Apple IIc with [FujiNet](https://github.com/FujiNetWIFI/fujinet-lib) hardware. Compose Markdown on your retro machine, sync over Wi-Fi to a modern Python server, and serve beautifully rendered HTML to the web.
+Write and publish blog posts from a real Apple II with [FujiNet](https://github.com/FujiNetWIFI/fujinet-lib) hardware. Compose Markdown on your retro machine, sync over Wi-Fi to a modern Python server, and serve beautifully rendered HTML to the web.
 
 ```text
-Apple IIc + FujiNet  ──────PUT/GET──────►  FastAPI Server  ──────►  Public Blog
+Apple II + FujiNet   ──────PUT/GET──────►  FastAPI Server  ──────►  Public Blog
     (CC65 client)                           (Python + uv)            (React SPA)
 ```
 
@@ -11,7 +11,7 @@ Apple IIc + FujiNet  ──────PUT/GET──────►  FastAPI Ser
 
 ## Features
 
-### Apple IIc Client
+### Apple II Client
 
 - Compose Markdown posts in an 80-column full-screen editor
 - Browse, create, edit, delete, and publish posts from a classic menu UI
@@ -45,7 +45,7 @@ fujiblogger/   (repo: fuji-blog)
 ├── CLAUDE.md               ← Deep technical notes (FujiNet quirks, API spec)
 ├── .gitignore
 │
-├── client/                 ← Apple IIc client (CC65 + MekkoGX)
+├── client/                 ← Apple II client (CC65 + MekkoGX)
 │   ├── Makefile            ← PRODUCT=fujiblog (ProDOS binary), FUJINET_LIB=4.10.0
 │   ├── mekkogx/            ← MekkoGX cross-platform build framework (submodule)
 │   └── src/
@@ -114,7 +114,7 @@ npm run build          # output → server/frontend/dist/
 
 In development you can also run `npm run dev` for hot-reload (proxies API calls to the FastAPI server).
 
-### 3 — Build and Deploy the Apple IIc Client
+### 3 — Build and Deploy the Apple II Client
 
 **Prerequisites:** cc65 toolchain installed and on your `PATH`.
 
@@ -129,11 +129,11 @@ Executable name on disk: `FUJIBLOG.SYSTEM` (ProDOS — 15 chars, the filesystem 
 `FUJIBLOGGER.SYSTEM` would be 18 chars and exceed the limit, so the binary keeps the
 shorter name while the program displays "FujiBlogger" in its UI.)
 
-Transfer to your Apple IIc via FujiNet's file browser or your preferred disk-transfer tool. Boot the disk and the client starts automatically.
+Transfer to your Apple II via FujiNet's file browser or your preferred disk-transfer tool. Boot the disk and the client starts automatically.
 
 ---
 
-## Apple IIc Client
+## Apple II Client
 
 ### First Run
 
@@ -338,7 +338,7 @@ curl http://localhost:8000/api/stats
 | `BSS overflows memory area 'BSS'` | Reduce static buffer sizes in `client/src/main.c` or move data to RODATA |
 | `FUJINET_LIB not found` | Set `FUJINET_LIB = 4.10.0` (or latest) in `client/Makefile` |
 
-### Apple IIc + FujiNet Connectivity Issues
+### Apple II + FujiNet Connectivity Issues
 
 | Symptom | Fix |
 | ------- | --- |
@@ -374,12 +374,12 @@ See [`CLAUDE.md`](CLAUDE.md) for the complete technical description.
 - Node.js 18+
 - npm
 
-### Apple IIc Client Build Requirements
+### Apple II Client Build Requirements
 
 - cc65 toolchain (`cc65`, `ca65`, `ld65`, `cl65`)
 - FujiNet-lib 4.10.0 (fetched automatically by MekkoGX)
 
-### Apple IIc Client Runtime Requirements
+### Apple II Client Runtime Requirements
 
 - Apple IIc or IIc Plus
 - FujiNet IWM device, firmware 4.10.0+
@@ -393,4 +393,4 @@ MIT — see individual source files for details.
 
 ---
 
-*Happy blogging from your Apple IIc!* 🍎
+*Happy blogging from your Apple II!* 🍎

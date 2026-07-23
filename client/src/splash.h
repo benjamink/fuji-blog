@@ -1,7 +1,7 @@
 #ifndef SPLASH_H
 #define SPLASH_H
 
-/* show_splash_hires() — lo-res color splash screen on Apple IIc.
+/* show_splash_hires() — lo-res color splash screen on the Apple II.
    Uses the text page ($0400-$07FF) for 40x48 pixel / 16-color display.
    Switches to 40-col lo-res, draws the logo, waits for a key, then
    returns to 80-col text mode for normal program operation.
