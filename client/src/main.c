@@ -1656,6 +1656,48 @@ static void wp_get_pos(int target, int len, int cols, int *row, int *col)
     }
 }
 
+static void wp_get_pos_hint(int target, int len, int cols,
+                            int hint, int hint_row, int hint_col,
+                            int *row, int *col)
+{
+    int off, r, de, ns;
+
+    if (hint >= 0 && hint < len && hint_col >= 0) {
+        /* Start from the beginning of the current visual row so the column
+           calculation stays valid even when the hint is not at row start. */
+        off = hint - hint_col;
+        r = hint_row;
+        while (off < len) {
+            ns = row_next(off, len, cols, &de);
+            if (target < ns) {
+                *row = r;
+                *col = (target < de) ? (target - off) : (de - off);
+                return;
+            }
+            off = ns;
+            r++;
+        }
+    } else if (hint >= 0 && hint < len) {
+        /* Fallback when the current row start is unknown: scan from the hint
+           position. This is less accurate for column calculation but still
+           useful for forward searches when the hint is at row start. */
+        off = hint;
+        r = hint_row;
+        while (off < len) {
+            ns = row_next(off, len, cols, &de);
+            if (target < ns) {
+                *row = r;
+                *col = (target < de) ? (target - off) : (de - off);
+                return;
+            }
+            off = ns;
+            r++;
+        }
+    }
+
+    wp_get_pos(target, len, cols, row, col);
+}
+
 /* Find the byte offset of the first char on the screen-row containing `target`. */
 static int wp_row_start(int target, int len, int cols)
 {
@@ -1719,7 +1761,7 @@ void body_editor(void)
     int er, cols, ch, len;
     int ar, ac, tr, new_pos, i;
     int text_changed, scroll_changed;
-    int old_cursor, old_cr, old_cc, old_ar;
+    int old_cursor, old_cr, old_cc, old_ar, old_len;
     int first_row;
     int insert_mode = 1;   /* 1 = INSERT (default), 0 = OVERWRITE; Ctrl+O toggles */
     int ta_ch = -1;        /* type-ahead: key captured during a slow repaint */
@@ -1757,6 +1799,7 @@ void body_editor(void)
         old_cr = cur_row;
         old_cc = cur_col;
         old_ar = ar;
+        old_len = len;
 
 #ifdef __CC65__
         if (ta_ch >= 0) { ch = ta_ch; ta_ch = -1; }
@@ -1779,9 +1822,23 @@ void body_editor(void)
            tr (row of top_char) is cached; only recomputed on scroll.      */
 
         if (ch == 0x08) {                           /* left arrow / backspace (same key on Apple IIc) */
-            if (cursor > 0) cursor--;
+            if (cursor > 0) {
+                cursor--;
+                if (ac > 0) {
+                    ac--;
+                } else {
+                    wp_get_pos(cursor, len, cols, &ar, &ac);
+                }
+            }
         } else if (ch == 0x15) {                    /* right arrow */
-            if (cursor < len) cursor++;
+            if (cursor < len) {
+                cursor++;
+                if (ac < cols - 2 && cursor > 0 && s_body[cursor - 1] != '\n') {
+                    ac++;
+                } else {
+                    wp_get_pos(cursor, len, cols, &ar, &ac);
+                }
+            }
         } else if (ch == 0x0B) {                    /* up arrow */
             if (ar > 0) cursor = wp_offset_at(ar - 1, ac, len, cols);
         } else if (ch == 0x0A) {                    /* down arrow */
@@ -1856,7 +1913,7 @@ void body_editor(void)
            printf — all of which dominate per-keypress cost on a 1 MHz 6502.
            The Len counter is updated on the next non-fast-path event. */
         if (text_changed
-                && old_cursor == len - 1
+                && old_cursor == old_len - 1
                 && old_cc < cols - 2
                 && s_body[cursor - 1] != '\n') {
             ar  = old_ar;
@@ -1872,7 +1929,8 @@ void body_editor(void)
 #endif
 
         /* General path: recompute position and repaint as needed. */
-        wp_get_pos(cursor, len, cols, &ar, &ac);
+        wp_get_pos_hint(cursor, len, cols, old_cursor, old_ar, old_cc,
+                        &ar, &ac);
 
         /* tr = visual row of top_char — only recomputed on scroll. */
         if (cursor < top_char) {

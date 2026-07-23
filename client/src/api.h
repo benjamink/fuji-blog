@@ -10,7 +10,7 @@
    main.c), so this limit is now bounded by client RAM, not the FujiNet write
    buffer.  2560 keeps the BSS segment safely under __HIMEM__ = $B000 (the
    proven-safe ceiling — raising __HIMEM__ further freezes the IIc). */
-#define MAX_API_MARKDOWN_BODY_LEN 2560
+#define MAX_API_MARKDOWN_BODY_LEN 2000
 #define MAX_API_CATEGORY_LEN     64
 #define MAX_API_TIMESTAMP_LEN    32
 #define MAX_API_POSTS            10
