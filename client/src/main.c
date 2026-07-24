@@ -1810,7 +1810,7 @@ void body_editor(void)
     cols = screen_width;
 
     HOME();
-    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
+    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+?:Help");
     for (i = 0; i < cols; i++) putchar('-');
     putchar('\n');
 
@@ -1823,7 +1823,7 @@ void body_editor(void)
        Repositioning at row 0 and redrawing is the reliable fix.          */
     revers(0);
     gotoxy(0, 0);
-    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
+    ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+?:Help");
     gotoxy(0, 1);
     for (i = 0; i < cols; i++) cputc('-');
 
