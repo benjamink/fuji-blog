@@ -10,6 +10,7 @@
 #include "ui.h"
 #include "splash.h"
 #include "qrcode.h"
+#include "screen.h"
 
 /* FujiNet App Key — creator @BEE5, app 0x01 (FujiBlogger).
    Key slot 0x00 stores the server URL (up to MAX_APPKEY_LEN = 64 bytes).
@@ -1528,6 +1529,33 @@ void read_line_with_default(char *buf, int maxlen)
 
 #define WP_HDR 2   /* header rows above body-editor area (header + dash-line) */
 
+#ifdef __CC65__
+/* Draw the "Len:NNNN  INS/OVR" status line at edit-area row `row`.
+   conio only — no printf, so no stdio/COUT overhead on the many repaints
+   that refresh it.  Reproduces the old "Len:%-4d  %s" layout exactly:
+   the count is left-justified in a 4-column field so a shrinking body
+   overwrites its own stale trailing digit. */
+static void we_status(int row, int len, int insert_mode)
+{
+    unsigned v = (len < 0) ? 0u : (unsigned)len;
+    unsigned pw;
+    int d = 0, started = 0;
+
+    revers(0);
+    gotoxy(0, (uint8_t)row);
+    cputs("Len:");
+    /* Decimal, most-significant digit first, no scratch buffer (BSS is at the
+       ceiling here).  Left-justified in a 4-wide field like the old "%-4d". */
+    for (pw = 1000; pw >= 1; pw /= 10) {
+        unsigned dig = (v / pw) % 10;
+        if (dig || started || pw == 1) { cputc((char)('0' + dig)); started = 1; d++; }
+    }
+    for (; d < 4; d++) cputc(' ');
+    cputs("  ");
+    cputs(insert_mode ? "INS" : "OVR");
+}
+#endif
+
 /* Render s_body in the edit area starting at byte offset `top`.
    `cur` is the cursor offset; drawn in inverse video.
    `first_row` is the first edit-area row to render (rows above are untouched).
@@ -1567,9 +1595,9 @@ static void we_draw(int top, int cur, int er, int len, int cols,
         while (p < de) {
             if (p == cur && !found) {
                 *cr = row; *cc = col; found = 1;
-                revers(1); putchar(s_body[p]); revers(0);
+                revers(1); cputc(s_body[p]); revers(0);
             } else {
-                putchar(s_body[p]);
+                cputc(s_body[p]);
             }
             p++; col++;
         }
@@ -1577,12 +1605,12 @@ static void we_draw(int top, int cur, int er, int len, int cols,
         /* Cursor at end-of-row (newline pos, wrap-space, or end-of-text) */
         if (p == cur && !found) {
             *cr = row; *cc = col; found = 1;
-            revers(1); putchar(' '); revers(0);
+            revers(1); cputc(' '); revers(0);
             col++;
         }
 
-        /* Pad to full screen width */
-        for (; col < cols; col++) putchar(' ');
+        /* Pad to full screen width (one conio call, not `cols` firmware writes) */
+        if (col < cols) cclear((uint8_t)(cols - col));
 
         if (off >= len) { row++; break; }
         off = ns; row++;
@@ -1595,7 +1623,7 @@ static void we_draw(int top, int cur, int er, int len, int cols,
     if (last_row >= er) {
         for (; row < er; row++) {
             gotoxy(0, WP_HDR + row);
-            for (col = 0; col < cols; col++) putchar(' ');
+            cclear((uint8_t)cols);
         }
     }
 #else
@@ -1663,6 +1691,14 @@ static void wp_get_pos_hint(int target, int len, int cols,
 {
     int off, r, de, ns;
 
+    /* Note: this deliberately does NOT early-out when the walk reaches the last
+       row (ns == len).  A trailing newline is not its own visual row, so at
+       end-of-text the authoritative wp_get_pos() below — reached by letting the
+       hint loop fall through — is what yields the correct row; an early-out here
+       reports the previous line and desynchronises ar, which breaks scrolling
+       after RETURN.  End-of-text typing avoids this scan via the ultra-fast
+       path in body_editor(); the cost here only lands on backspace / arrow / the
+       first char of a new line. */
     if (hint >= 0 && hint < len && hint_col >= 0) {
         /* Start from the beginning of the current visual row so the column
            calculation stays valid even when the hint is not at row start. */
@@ -1742,8 +1778,8 @@ static void vp_draw(int top_line, int er, int len, int cols)
         de = off; ns = off;
         if (off < len) ns = row_next(off, len, cols, &de);
         col = 0;
-        while (off < de) { putchar(s_body[off++]); col++; }
-        while (col < cols) { putchar(' '); col++; }
+        while (off < de) { cputc(s_body[off++]); col++; }
+        if (col < cols) cclear((uint8_t)(cols - col));
         off = ns;
     }
 #else
@@ -1764,6 +1800,7 @@ void body_editor(void)
     int text_changed, scroll_changed;
     int old_cursor, old_cr, old_cc, old_ar, old_len;
     int first_row;
+    int one_row_scroll;   /* +1 = scrolled down by a row, -1 = up, 0 = neither */
     int insert_mode = 1;   /* 1 = INSERT (default), 0 = OVERWRITE; Ctrl+O toggles */
     int ta_ch = -1;        /* type-ahead: key captured during a slow repaint */
 
@@ -1788,10 +1825,9 @@ void body_editor(void)
     gotoxy(0, 0);
     ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
     gotoxy(0, 1);
-    for (i = 0; i < cols; i++) putchar('-');
+    for (i = 0; i < cols; i++) cputc('-');
 
-    gotoxy(0, WP_HDR + er);
-    printf("Len:%-4d  %s", len, insert_mode ? "INS" : "OVR");
+    we_status(WP_HDR + er, len, insert_mode);
     gotoxy(cur_col, WP_HDR + cur_row);
 #endif
 
@@ -1808,7 +1844,7 @@ void body_editor(void)
 #else
         ch = getchar();
 #endif
-        text_changed = 0; scroll_changed = 0;
+        text_changed = 0; scroll_changed = 0; one_row_scroll = 0;
 
         if (ch == 27) break;                        /* ESC = done */
 
@@ -1855,9 +1891,7 @@ void body_editor(void)
         } else if (ch == 0x0F) {                    /* Ctrl+O = toggle INS/OVR */
             insert_mode = !insert_mode;
 #ifdef __CC65__
-            gotoxy(0, WP_HDR + er);
-            revers(0);
-            printf("Len:%-4d  %s", len, insert_mode ? "INS" : "OVR");
+            we_status(WP_HDR + er, len, insert_mode);
             gotoxy(cur_col, WP_HDR + cur_row);
 #endif
         } else if (ch == 0x0D) {                    /* RETURN = newline */
@@ -1907,23 +1941,39 @@ void body_editor(void)
         }
 
 #ifdef __CC65__
-        /* Ultra-fast path: printable char appended at end of text AND the
-           cursor is safely away from the row edge (old_cc < cols-2 means
-           adding one char cannot trigger word-wrap).  We skip wp_get_pos
-           (an O(n) scan from position 0), scroll detection, we_draw, and
-           printf — all of which dominate per-keypress cost on a 1 MHz 6502.
-           The Len counter is updated on the next non-fast-path event. */
+        /* Ultra-fast path: printable char appended at the end of the text AND
+           the cursor is safely away from the row edge (old_cc < cols-2 means
+           adding one char cannot trigger word-wrap).  We skip wp_get_pos_hint
+           (which, at end-of-text, falls through to an O(document) scan from
+           offset 0 — see its early-return note), scroll detection, we_draw,
+           and the status redraw — all of which dominate per-keypress cost on a
+           1 MHz 6502.  The Len counter is updated on the next non-fast event.
+
+           `cursor == len` means the cursor now sits at the end of the text;
+           `cursor == old_cursor + 1` means a character was just inserted (not
+           deleted), so s_body[old_cursor] is the new char.  (The previous
+           `old_cursor == old_len - 1` never matched an append — at end-of-text
+           old_cursor == old_len — so this path never fired and every keystroke
+           paid the full O(document) scan.) */
         if (text_changed
-                && old_cursor == old_len - 1
+                && cursor == len
+                && cursor == old_cursor + 1
                 && old_cc < cols - 2
-                && s_body[cursor - 1] != '\n') {
+                && s_body[cursor - 1] != '\n'
+                && (cursor < 2 || s_body[cursor - 2] != '\n')) {
+            /* The last guard excludes the first character typed on a fresh line
+               (the char just before it is a '\n').  A trailing newline is not
+               counted as its own visual row by row_next(), so right after RETURN
+               the tracked ar/ac still point at the end of the previous line; the
+               general path below recomputes them.  Firing the fast path here
+               would freeze ar one row high and scrolling would never trigger. */
             ar  = old_ar;
             ac  = old_cc + 1;
             cur_row = old_cr;
             cur_col = ac;
             gotoxy(old_cc, WP_HDR + old_cr);
-            putchar(s_body[old_cursor]);        /* newly typed char */
-            revers(1); putchar(' '); revers(0); /* inverse cursor   */
+            cputc(s_body[old_cursor]);          /* newly typed char */
+            revers(1); cputc(' '); revers(0);   /* inverse cursor   */
             gotoxy(cur_col, WP_HDR + cur_row);
             continue;  /* skip wp_get_pos, scroll, repaint entirely */
         }
@@ -1933,22 +1983,44 @@ void body_editor(void)
         wp_get_pos_hint(cursor, len, cols, old_cursor, old_ar, old_cc,
                         &ar, &ac);
 
-        /* tr = visual row of top_char — only recomputed on scroll. */
+        /* tr = visual row of top_char — only recomputed on scroll.
+           A single keystroke moves the cursor at most one visual row, so a
+           scroll is almost always exactly one row.  We flag those (one_row_
+           scroll) so the repaint can shift the screen instead of repainting
+           it — see the scr_scroll() path below.  Anything larger, or a
+           text-changing scroll upward (which can reflow several visible rows),
+           falls through to a full repaint. */
         if (cursor < top_char) {
+            int old_top_tr = tr;
             top_char = wp_row_start(cursor, len, cols);
-            scroll_changed = 1;
             wp_get_pos(top_char, len, cols, &tr, &new_pos);
+            scroll_changed = 1;
+#ifdef __CC65__
+            if (!text_changed && tr == old_top_tr - 1) one_row_scroll = -1;
+#endif
         } else if (ar - tr >= er) {
-            top_char = wp_offset_at(ar - er + 1, 0, len, cols);
-            wp_get_pos(top_char, len, cols, &tr, &new_pos);
-            scroll_changed = 1;
+#ifdef __CC65__
+            if (ar - er + 1 == tr + 1) {
+                /* Scroll down one row: advance top_char incrementally (O(1))
+                   instead of the O(document) wp_offset_at scan from offset 0. */
+                top_char = row_next(top_char, len, cols, &new_pos);
+                tr++;
+                scroll_changed = 1;
+                one_row_scroll = 1;
+            } else
+#endif
+            {
+                top_char = wp_offset_at(ar - er + 1, 0, len, cols);
+                wp_get_pos(top_char, len, cols, &tr, &new_pos);
+                scroll_changed = 1;
+            }
         }
 
         if (text_changed || scroll_changed) {
 #ifdef __CC65__
             /* Mid-row fast path: single-char insert or backspace that did
                not cause a word-wrap.  Only the tail of the current row
-               changed — skip we_draw and printf entirely.
+               changed — redraw just that tail, skipping we_draw entirely.
                off_row = start of current row in s_body = old_cursor - old_cc.
                For insert start_col = old_cc; for backspace start_col = ac. */
             if (text_changed && !scroll_changed
@@ -1965,55 +2037,55 @@ void body_editor(void)
                 while (p < de_row) {
                     if (p == cursor) {
                         revers(1);
-                        putchar(s_body[p]);
+                        cputc(s_body[p]);
                         revers(0);
                     } else {
-                        putchar(s_body[p]);
+                        cputc(s_body[p]);
                     }
                     p++; col++;
                 }
                 if (p == cursor) {
-                    revers(1); putchar(' '); revers(0);
+                    revers(1); cputc(' '); revers(0);
                     col++;
                 }
-                for (; col < cols; col++) putchar(' ');
+                if (col < cols) cclear((uint8_t)(cols - col));
                 gotoxy(cur_col, WP_HDR + cur_row);
             } else {
-                /* Full/partial repaint for word-wrap, scroll, RETURN. */
-                if (scroll_changed) {
-                    first_row = 0;
-                } else {
-                    /* Word-wrap only changes old_cr and the row below it.
-                       Row old_cr-1 is untouched; skip it to halve redraw cost. */
-                    first_row = old_cr;
+                /* Full/partial repaint for word-wrap, scroll, RETURN.
+                   One-row scrolls are special: the on-screen text is already
+                   correct, only one row out of place.  scr_scroll() shifts it
+                   in screen memory and we redraw just the edge band (the
+                   newly-exposed row + its neighbour, to cover a word-wrap
+                   reflow) — a screenful move instead of a full repaint. */
+                int last_row;
+                if (scroll_changed) first_row = 0;
+                else                first_row = old_cr;   /* word-wrap: old_cr row + below */
+                last_row = scroll_changed ? er
+                         : (old_cr + 2 < er ? old_cr + 2 : er);
+                if (one_row_scroll) {
+                    scr_scroll((unsigned char)(er
+                        | (cols >= 80 ? SCR_W80 : 0)
+                        | (one_row_scroll > 0 ? 0 : SCR_DOWN)));
+                    if (one_row_scroll > 0) { first_row = er >= 2 ? er - 2 : 0; last_row = er; }
+                    else                    { first_row = 0; last_row = er >= 2 ? 2 : 1; }
                 }
-                {
-                    int last_row = scroll_changed ? er
-                                 : (old_cr + 2 < er ? old_cr + 2 : er);
-#ifdef __CC65__
-                    /* Capture any key already pending before the slow repaint */
-                    if (ta_ch < 0 && kbhit()) ta_ch = cgetc();
-#endif
-                    we_draw(top_char, cursor, er, len, cols, first_row,
-                            last_row, &cur_row, &cur_col);
-#ifdef __CC65__
-                    /* Capture any key typed during the repaint */
-                    if (ta_ch < 0 && kbhit()) ta_ch = cgetc();
-#endif
-                }
+                /* Capture any key pending before/after the repaint (type-ahead) */
+                if (ta_ch < 0 && kbhit()) ta_ch = cgetc();
+                we_draw(top_char, cursor, er, len, cols, first_row,
+                        last_row, &cur_row, &cur_col);
+                if (ta_ch < 0 && kbhit()) ta_ch = cgetc();
                 ar = cur_row + tr;  ac = cur_col;
                 revers(0);
-                /* On scroll, we_draw rewrites all content rows which can
-                   leave the 80-col firmware's inverse state dirty.
-                   Redraw the header + dashes to guarantee a clean frame. */
-                if (scroll_changed) {
+                /* A full scroll repaint can leave the 80-col firmware's inverse
+                   state dirty on the frame rows; redraw header + dashes.  A
+                   one-row scroll never touches those rows, so skip it. */
+                if (scroll_changed && !one_row_scroll) {
                     gotoxy(0, 0);
                     ui_header("BODY EDITOR", "Esc:Done  Ctrl+O:INS  Ctrl+\\ :Help");
                     gotoxy(0, 1);
-                    for (i = 0; i < cols; i++) putchar('-');
+                    for (i = 0; i < cols; i++) cputc('-');
                 }
-                gotoxy(0, WP_HDR + er);
-                printf("Len:%-4d  %s", len, insert_mode ? "INS" : "OVR");
+                we_status(WP_HDR + er, len, insert_mode);
                 gotoxy(cur_col, WP_HDR + cur_row);
             }
 #else
@@ -2029,15 +2101,15 @@ void body_editor(void)
             /* Fast path: erase old inverse cursor, draw new one */
             gotoxy(old_cc, WP_HDR + old_cr);
             if (old_cursor < len && s_body[old_cursor] != '\n')
-                putchar(s_body[old_cursor]);
+                cputc(s_body[old_cursor]);
             else
-                putchar(' ');
+                cputc(' ');
             gotoxy(cur_col, WP_HDR + cur_row);
             revers(1);
             if (cursor < len && s_body[cursor] != '\n')
-                putchar(s_body[cursor]);
+                cputc(s_body[cursor]);
             else
-                putchar(' ');
+                cputc(' ');
             revers(0);
 #endif
         }
